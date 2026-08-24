@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<meta property="og:title" content="elysia">
+<meta property="og:description" content="a searchable database of Disco Elysium dialogue lines">
+<meta property="og:site_name" content="elysia">
+<meta property="og:image" content="https://arda0.net/assets/favicon">
+<meta property="og:url" content="https://arda0.net/elysia/">
+<link rel="icon" href="/assets/favicon">
+
+<title>elysia - a Disco Elysium database crawler</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: monospace; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #fafafa; }
+  input, select, button { font-family: monospace; font-size: 0.9rem; padding: 0.3rem; max-width: 100%; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+  .toolbar input[type=text] { flex: 1; min-width: 120px; }
+  #home-character { max-width: 220px; }
+  .result-item { border-bottom: 1px solid #ccc; padding: 0.5rem 0; }
+  .meta { color: #666; font-size: 0.8rem; }
+  .explore-btn { margin-left: 0.5rem; font-size: 0.75rem; }
+  .skill-badge { color: #fff; font-weight: bold; padding: 0.05rem 0.4rem; border-radius: 3px; }
+  .back-link { display: inline-block; margin-bottom: 0.8rem; font-size: 0.85rem; }
+
+  .mode-tabs button { padding: 0.4rem 0.7rem; }
+  .mode-tabs button.active { background: #333; color: #fff; }
+
+  .landing-center {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1.2rem; min-height: 50vh;
+  }
+  .landing-links { display: flex; justify-content: center; gap: 1.5rem; }
+  .landing-links a { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .landing-links svg { width: 18px; height: 18px; flex-shrink: 0; }
+  .landing-contact { display: flex; justify-content: center; align-items: center; gap: 0.8rem; font-size: 0.85rem; }
+  .landing-contact .sep { color: #ccc; }
+
+  #explorer { border: 1px solid #ccc; padding: 1rem; margin-top: 0.5rem; }
+  #explorer .node { margin-bottom: 1rem; }
+  #explorer .speaker { font-weight: bold; }
+  #explorer .you .speaker { color: #1a5fb4; }
+  #explorer .check { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem; margin: 0.3rem 0; border-radius: 3px; }
+  #explorer .check.white { background: #eee; border: 1px solid #999; }
+  #explorer .check.red { background: #fdd; border: 1px solid #c33; color: #900; }
+  #explorer .text { margin-top: 0.3rem; white-space: pre-wrap; }
+  #explorer .alts { font-size: 0.8rem; color: #555; margin-top: 0.4rem; }
+  #explorer .condition {
+    font-size: 0.75rem; color: #555; margin-top: 0.3rem;
+    border-left: 3px solid #999; padding-left: 0.5rem;
+  }
+  #explorer .condition code { color: #333; }
+  #explorer .modifiers { font-size: 0.75rem; margin-top: 0.2rem; }
+  #explorer .modifiers li { list-style: none; }
+  #explorer .mod-pos { color: #1a6b2e; font-weight: bold; }
+  #explorer .mod-neg { color: #a31212; font-weight: bold; }
+  #explorer .options button {
+    display: flex; flex-direction: column; align-items: stretch;
+    width: 100%; text-align: left; margin: 0.2rem 0; padding: 0.4rem;
+    gap: 0.2rem;
+  }
+  #explorer .options .opt-row {
+    display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
+  }
+  #explorer .options .opt-condition { font-size: 0.7rem; color: #777; }
+  #explorer .options .opt-condition code { color: #555; }
+  #explorer .options button.you { border-left: 3px solid #1a5fb4; }
+  #explorer .options button.cross { border-left: 3px solid #c33; }
+  #explorer .options button.outcome-success { border-right: 5px solid #1a6b2e; }
+  #explorer .options button.outcome-failure { border-right: 5px solid #a31212; }
+  #explorer .options .outcome { font-size: 0.75rem; font-weight: bold; white-space: nowrap; flex-shrink: 0; }
+  #explorer .options .outcome.success { color: #1a6b2e; }
+  #explorer .options .outcome.failure { color: #a31212; }
+  #explorer .options .opt-id { color: #999; font-size: 0.75rem; }
+  #explorer .options .opt-id-dup {
+    color: #000; background: #ffd54a; font-weight: bold;
+    padding: 0.05rem 0.3rem; border-radius: 3px;
+  }
+  #explorer .end { color: #999; font-style: italic; }
+  #explorer-controls { margin-bottom: 0.5rem; }
+  #explorer-controls button { margin-right: 0.4rem; }
+</style>
+</head>
+<body>
+<div id="site-header"></div>
+<h2>elysia, a Disco Elysium database crawler</h2>
+<div id="version-notice" class="meta"></div>
+
+<div id="app">
+
+  <!-- Landing page: pick what you're looking for, then a small form for it. -->
+  <div id="view-home">
+    <p>what are you looking for?</p>
+    <div class="toolbar mode-tabs" id="mode-tabs">
+      <button data-mode="lines" onclick="setMode('lines')">a line of dialogue</button>
+      <button data-mode="branches" onclick="setMode('branches')">a branch / scene</button>
+      <button data-mode="line" onclick="setMode('line')">an exact line (branch/id)</button>
+      <button data-mode="branch" onclick="setMode('branch')">an exact branch (id)</button>
+    </div>
+    <div id="mode-form" style="margin-top: 0.6rem;"></div>
+  </div>
+
+  <!-- Shared results list for both search modes -->
+  <div id="view-search" style="display:none;">
+    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; new search</a>
+    <div id="search-results"></div>
+  </div>
+
+  <!-- A single line's full detail - the "line page" -->
+  <div id="view-line" style="display:none;">
+    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; new search</a>
+    <div id="line-detail"></div>
+  </div>
+
+  <!-- The interactive branch explorer -->
+  <div id="view-branch" style="display:none;">
+    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; new search</a>
+    <div class="toolbar">
+      <input type="text" id="branchJumpInput" placeholder="jump to branch id, or branch/line e.g. 182/23">
+      <button onclick="submitBranchJump()">go</button>
+    </div>
+    <div id="explorer-controls" style="display:none;">
+      <button id="backBtn" onclick="goBack()">&larr; back</button>
+      <button onclick="restartBranch()">&#8635; restart branch</button>
+      <button onclick="copyToClipboard(branchAddressUrl(rootBranchId), this)">copy branch address</button>
+      <span class="meta" id="explorerTitle"></span>
+    </div>
+    <div id="explorer"></div>
+  </div>
+
+</div>
+
+<script>
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
+async function copyToClipboard(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    prompt("copy this:", text);
+    return;
+  }
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = "copied!";
+    setTimeout(() => { btn.textContent = orig; }, 1200);
+  }
+}
+
+function lineAddressUrl(branchId, dentryId) {
+  return `${location.origin}${location.pathname}?view=line&branch=${branchId}&id=${dentryId}`;
+}
+function branchAddressUrl(branchId) {
+  return `${location.origin}${location.pathname}?view=branch&branch=${branchId}`;
+}
+
+// All 24 skills, grouped by their attribute - not in the source db anywhere
+// (checked: no attribute/group table, .schema has nothing for it), this is
+// game knowledge layered on top. "Perception (Hearing/Sight)" are the same
+// underlying skill as plain "Perception", just check-flavor variants seen
+// in the checks table's skilltype column.
+const SKILL_ATTRIBUTE = {
+  "Logic": "INT", "Encyclopedia": "INT", "Rhetoric": "INT",
+  "Drama": "INT", "Conceptualization": "INT", "Visual Calculus": "INT",
+  "Volition": "PSY", "Inland Empire": "PSY", "Empathy": "PSY",
+  "Authority": "PSY", "Esprit de Corps": "PSY", "Suggestion": "PSY",
+  "Endurance": "PHY", "Pain Threshold": "PHY", "Physical Instrument": "PHY",
+  "Electrochemistry": "PHY", "Shivers": "PHY", "Half Light": "PHY",
+  "Hand/Eye Coordination": "MOT", "Perception": "MOT", "Reaction Speed": "MOT",
+  "Savoir Faire": "MOT", "Interfacing": "MOT", "Composure": "MOT",
+  "Perception (Hearing)": "MOT", "Perception (Sight)": "MOT",
+};
+
+const ATTRIBUTE_COLOR = {
+  INT: "#1a2f6b",  // dark blue
+  PSY: "#3d1a5b",  // dark purple
+  PHY: "#6b1a1a",  // dark red
+  MOT: "#7a6a10",  // dark yellow
+};
+
+// Wraps `name` in its attribute-colored badge if it's a skill name (as a
+// check's skilltype, or as a skill speaking as an actor - both happen in
+// this dataset), otherwise returns it plain-escaped.
+function skillOrPlain(name) {
+  const attr = SKILL_ATTRIBUTE[name];
+  if (!attr) return escapeHtml(name);
+  return `<span class="skill-badge" style="background:${ATTRIBUTE_COLOR[attr]}">${escapeHtml(name)}</span>`;
+}
+
+let cachedCharacters = null;
+async function getCharacters() {
+  if (cachedCharacters) return cachedCharacters;
+  const res = await fetch("characters");
+  cachedCharacters = await res.json();
+  return cachedCharacters;
+}
+async function populateCharacterSelect(selectEl) {
+  const chars = await getCharacters();
+  for (const c of chars) {
+    const opt = document.createElement("option");
+    opt.value = c.name;
+    opt.textContent = c.name;
+    selectEl.appendChild(opt);
+  }
+}
+
+// --- router ------------------------------------------------------------
+// Real query-string state (?view=...&...), so a URL from the address bar
+// or a "copy address" button is an actual, reloadable/shareable link, not
+// just in-memory app state. Top-level navigation (switching between
+// home/search/line/branch) uses pushState so the browser back button
+// works across those. Fine-grained movement *within* one branch explorer
+// (choosing an option, going back inside the flattened chain) uses
+// replaceState instead - the explorer's own "back" button is graph-native
+// (see resolvePrevReal below), not driven by browser/session history, and
+// pushing a browser-history entry per click would just fight with that.
+// The address bar still always reflects the current exact position either way.
+
+function navigate(params, push) {
+  const usp = new URLSearchParams();
+  for (const k in params) {
+    if (params[k] !== undefined && params[k] !== null && params[k] !== "") usp.set(k, params[k]);
+  }
+  const qs = usp.toString();
+  const url = qs ? `?${qs}` : location.pathname;
+  if (push === false) history.replaceState(params, "", url);
+  else history.pushState(params, "", url);
+  render(params);
+}
+
+function goHome() {
+  navigate({ view: "home" });
+}
+
+window.addEventListener("popstate", (e) => {
+  render(e.state || Object.fromEntries(new URLSearchParams(location.search)));
+});
+
+const VIEW_CONTAINERS = {
+  home: "view-home",
+  "search-lines": "view-search",
+  "search-branches": "view-search",
+  line: "view-line",
+  branch: "view-branch",
+};
+
+function showView(view) {
+  const target = VIEW_CONTAINERS[view] || "view-home";
+  const shown = new Set(Object.values(VIEW_CONTAINERS));
+  for (const id of shown) {
+    document.getElementById(id).style.display = (id === target) ? "block" : "none";
+  }
+}
+
+function render(params) {
+  const view = params.view || "home";
+  showView(view);
+  if (view === "search-lines") runSearchLines(params.q, params.character, Number(params.index || 0));
+  else if (view === "search-branches") runSearchBranches(params.title, Number(params.index || 0));
+  else if (view === "line") runLineDetail(params.branch, params.id);
+  else if (view === "branch") runBranchExplorer(params.branch, params.at);
+  else renderHome();
+}
+
+// --- home / landing ------------------------------------------------------
+
+let currentMode = null;  // nothing pre-selected - see the two landing buttons below
+
+const GITHUB_ICON = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>`;
+const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+
+function setMode(mode) {
+  currentMode = mode;
+  renderHome();
+}
+
+function renderHome() {
+  for (const btn of document.querySelectorAll("#mode-tabs button")) {
+    btn.classList.toggle("active", btn.dataset.mode === currentMode);
+  }
+  const el = document.getElementById("mode-form");
+  if (!currentMode) {
+    el.innerHTML = `
+      <div class="landing-center">
+        <div class="landing-links">
+          <a href="https://github.com/arda-y/elysia" target="_blank" rel="noopener">${GITHUB_ICON} GitHub</a>
+          <a href="database/download">${DOWNLOAD_ICON} Download database</a>
+        </div>
+        <p class="meta">inspired by <a href="http://fayde.co.uk/" target="_blank" rel="noopener">fayde.co.uk</a></p>
+        <div class="landing-contact meta">
+          <span>requests and problems - reach out on discord: needbeypazari</span>
+        </div>
+      </div>
+    `;
+  } else if (currentMode === "lines") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <input type="text" id="home-q" placeholder="search text (optional if a character is picked)">
+        <select id="home-character"><option value="">-- any character --</option></select>
+        <button onclick="submitLinesSearch()">search</button>
+      </div>
+      <p class="meta">text and character combine with AND - both must match if both are given.</p>
+    `;
+    populateCharacterSelect(document.getElementById("home-character"));
+  } else if (currentMode === "branches") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <input type="text" id="home-title" placeholder="branch/scene title, e.g. Klaasje">
+        <button onclick="submitBranchSearch()">search</button>
+      </div>
+    `;
+  } else if (currentMode === "line") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <input type="text" id="home-line" placeholder="branch/line, e.g. 182/23">
+        <button onclick="submitLineLookup()">go</button>
+      </div>
+    `;
+  } else if (currentMode === "branch") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <input type="text" id="home-branch" placeholder="branch id, e.g. 182">
+        <button onclick="submitBranchLookup()">go</button>
+      </div>
+    `;
+  }
+}
+
+function submitLinesSearch() {
+  const q = document.getElementById("home-q").value.trim();
+  const character = document.getElementById("home-character").value;
+  if (!q && !character) return;
+  navigate({ view: "search-lines", q, character });
+}
+
+function submitBranchSearch() {
+  const title = document.getElementById("home-title").value.trim();
+  if (!title) return;
+  navigate({ view: "search-branches", title });
+}
+
+function parseBranchLine(raw) {
+  const m = raw.trim().match(/^(\d+)\s*[\/-]\s*(\d+)$/);
+  return m ? { branch: Number(m[1]), id: Number(m[2]) } : null;
+}
+
+function submitLineLookup() {
+  const raw = document.getElementById("home-line").value;
+  const parsed = parseBranchLine(raw);
+  if (!parsed) {
+    alert("use branch/line format, e.g. 182/23");
+    return;
+  }
+  navigate({ view: "line", branch: parsed.branch, id: parsed.id });
+}
+
+function submitBranchLookup() {
+  const raw = document.getElementById("home-branch").value.trim();
+  if (!/^\d+$/.test(raw)) {
+    alert("enter a plain branch id, e.g. 182");
+    return;
+  }
+  navigate({ view: "branch", branch: Number(raw) });
+}
+
+// --- search results --------------------------------------------------------
+
+// Shared by both search views - the backend fixes page size at 100 and
+// always returns {results, total, index, limit, has_more}, never a bare
+// array, specifically so a result set past one page is never silently
+// truncated without the caller knowing there's more.
+function paginationHtml(data, buildParams) {
+  if (data.total <= data.limit) return "";
+  const page = Math.floor(data.index / data.limit) + 1;
+  const pageCount = Math.ceil(data.total / data.limit);
+  const prevIndex = Math.max(0, data.index - data.limit);
+  const nextIndex = data.index + data.limit;
+  const prevDisabled = data.index === 0 ? "disabled" : "";
+  const nextDisabled = data.has_more ? "" : "disabled";
+  return `
+    <div class="toolbar" style="margin-top:0.6rem;">
+      <button ${prevDisabled} onclick='navigate(${JSON.stringify(buildParams(prevIndex))})'>&larr; prev</button>
+      <span class="meta">page ${page} of ${pageCount} (${data.total} total)</span>
+      <button ${nextDisabled} onclick='navigate(${JSON.stringify(buildParams(nextIndex))})'>next &rarr;</button>
+    </div>
+  `;
+}
+
+async function runSearchLines(q, character, index) {
+  const out = document.getElementById("search-results");
+  out.textContent = "searching...";
+  const usp = new URLSearchParams();
+  if (q) usp.set("q", q);
+  if (character) usp.set("character", character);
+  usp.set("index", index);
+  try {
+    const res = await fetch("search/lines?" + usp.toString());
+    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
+    const data = await res.json();
+    const list = data.results.length
+      ? data.results.map(l => `
+          <div class="result-item">
+            <div class="meta">
+              [${l.branch_id}/${l.dentry_id}] ${skillOrPlain(l.speaker || "?")}
+              <button class="explore-btn" onclick='navigate({view:"line", branch:${l.branch_id}, id:${l.dentry_id}})'>line page</button>
+              <button class="explore-btn" onclick='navigate({view:"branch", branch:${l.branch_id}, at:${l.dentry_id}})'>open in branch &rarr;</button>
+            </div>
+            <div>${escapeHtml(l.text)}</div>
+          </div>
+        `).join("")
+      : "no results.";
+    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-lines", q, character, index: i }));
+  } catch (e) {
+    out.textContent = "request failed: " + e;
+  }
+}
+
+async function runSearchBranches(title, index) {
+  const out = document.getElementById("search-results");
+  out.textContent = "searching...";
+  try {
+    const res = await fetch("search/branches?" + new URLSearchParams({ title, index }).toString());
+    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
+    const data = await res.json();
+    const list = data.results.length
+      ? data.results.map(b => `
+          <div class="result-item">
+            <div class="meta">
+              [branch ${b.branch_id}]
+              <button class="explore-btn" onclick='navigate({view:"branch", branch:${b.branch_id}})'>open branch &rarr;</button>
+            </div>
+            <div><strong>${escapeHtml(b.title || "(untitled)")}</strong></div>
+            ${b.description ? `<div class="meta">${escapeHtml(b.description)}</div>` : ""}
+          </div>
+        `).join("")
+      : "no results.";
+    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-branches", title, index: i }));
+  } catch (e) {
+    out.textContent = "request failed: " + e;
+  }
+}
+
+// --- line detail page --------------------------------------------------------
+// Deliberately lightweight - fetches just this one line (some branches have
+// 1000+ entries, no reason to pull the whole thing for a single card) - and
+// its only real job besides showing the line is easy traversal into the
+// full interactive branch explorer at this exact point.
+
+async function runLineDetail(branch, id) {
+  const out = document.getElementById("line-detail");
+  out.textContent = "loading...";
+  try {
+    const res = await fetch(`branches/${branch}/lines/${id}`);
+    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
+    const entry = await res.json();
+    out.innerHTML = `
+      <div class="meta">branch ${entry.branch_id}: ${escapeHtml(entry.branch_title || "")}</div>
+      ${renderNodeHtml(entry, entry.branch_id, /*showCopyLink=*/false)}
+      <div class="toolbar">
+        <button onclick='navigate({view:"branch", branch:${entry.branch_id}, at:${entry.dentry_id}})'>open in branch explorer &rarr;</button>
+        <button onclick="copyToClipboard(lineAddressUrl(${entry.branch_id}, ${entry.dentry_id}), this)">copy line address</button>
+      </div>
+    `;
+  } catch (e) {
+    out.textContent = "request failed: " + e;
+  }
+}
+
+// --- branch explorer -------------------------------------------------------
+// /branches/{id} returns the whole branch flat (all entries + all graph
+// edges) in one shot, so the actual tree-walking happens client-side:
+// system/junction nodes (is_system) are transparently skipped over so the
+// user only ever sees real lines and real choices, never raw plumbing nodes.
+
+let branchData = null;
+let entriesById = {};
+let linksByOrigin = {};
+let currentDentryId = null;
+let currentOptions = [];
+let rootBranchId = null;         // the branch id "restart"/"copy branch address" use
+let currentBranchId_global = null;   // branch the currently-shown choice buttons belong to
+let currentAnchorBranchId = null;    // (branchId, dentryId) this render's flattened
+let currentAnchorDentryId = null;    // walk actually *started* from - "back" finds
+                                      // this point's real tree-predecessor, not
+                                      // wherever the walk happened to stop.
+const lineInfoCache = {};  // branchId:dentryId -> /lines/{id} response, reused during backward walks
+
+function indexBranchData(json) {
+  branchData = json;
+  entriesById = {};
+  linksByOrigin = {};
+  for (const e of json.entries) entriesById[e.dentry_id] = e;
+  for (const l of json.links) {
+    (linksByOrigin[l.from_dentry_id] ||= []).push(l);
+  }
+}
+
+async function fetchBranch(branchId) {
+  const res = await fetch(`branches/${branchId}`);
+  if (!res.ok) throw new Error((await res.json()).detail);
+  return await res.json();
+}
+
+// Walks forward from dentryId, transparently skipping system/junction
+// nodes, and returns the list of reachable "real" next steps - either a
+// real line/choice in this branch, or a marker that the tree leaves to a
+// different branch entirely. visited guards against cycles (the graph is
+// not guaranteed to be acyclic).
+// activeFlag is the flagname of the check the caller is currently past (if
+// any) - a check's pass/fail branches are encoded in this dataset as two
+// system/group nodes further down the graph, gated by conditionstring
+// Variable["<flag>"] (success) or (Variable["<flag>"]) == false (failure).
+// Confirmed against the real data (checks.flagname cross-referenced with
+// dentries.conditionstring) rather than assumed. Every option inherits the
+// outcome of whichever gate it passed through, if any.
+// conditions accumulates any *other* (non-outcome) gating conditions seen
+// on system/group nodes passed through on the way to this option - the
+// tool never evaluates these (no live game state to check them against),
+// it just surfaces them so alternatives-by-variable are visibly labeled
+// instead of silently presented as if they were unconditional choices.
+function resolveNextOptions(dentryId, activeFlag, visited, outcome, conditions) {
+  visited = visited || new Set();
+  conditions = conditions || [];
+  const options = [];
+  const links = linksByOrigin[dentryId] || [];
+  for (const l of links) {
+    if (l.leaves_branch) {
+      options.push({ type: "cross", toBranch: l.to_branch_id, toDentry: l.to_dentry_id, outcome: outcome || null, conditions });
+      continue;
+    }
+    if (visited.has(l.to_dentry_id)) continue;
+    const dest = entriesById[l.to_dentry_id];
+    if (!dest) continue;
+    if (dest.is_system) {
+      let nextOutcome = outcome || null;
+      let nextConditions = conditions;
+      if (dest.condition) {
+        if (activeFlag && dest.condition === `Variable["${activeFlag}"]`) {
+          nextOutcome = "success";
+        } else if (activeFlag && dest.condition === `(Variable["${activeFlag}"]) == false`) {
+          nextOutcome = "failure";
+        } else {
+          // a generic gate, not the specific check-outcome pattern above -
+          // record it rather than silently passing through.
+          nextConditions = [...conditions, dest.condition];
+        }
+      }
+      const nextVisited = new Set(visited);
+      nextVisited.add(l.to_dentry_id);
+      options.push(...resolveNextOptions(l.to_dentry_id, activeFlag, nextVisited, nextOutcome, nextConditions));
+    } else {
+      // The destination line can carry its own gating condition directly
+      // (not just via an intermediate system junction) - e.g. two options
+      // with identical preview text that are actually a before/after-quest
+      // variant pair, distinguished only by their own conditionstring.
+      // Missing this made such pairs look like unexplained duplicates.
+      const lineConditions = dest.condition ? [...conditions, dest.condition] : conditions;
+      options.push({ type: "line", dentryId: l.to_dentry_id, outcome: outcome || null, conditions: lineConditions });
+    }
+  }
+  return options;
+}
+
+// Switches the loaded branchData/index to branchId, fetching if needed,
+// and updates the title so it stays in sync whenever a chain walk crosses
+// into a different branch mid-flow.
+async function switchToBranch(branchId) {
+  const json = await fetchBranch(branchId);
+  indexBranchData(json);
+  document.getElementById("explorerTitle").textContent = `branch ${json.branch_id}: ${json.title || ""}`;
+}
+
+// Shared between the full node display and the option-button preview -
+// a choice leading straight into a check needs the same RED/WHITE +
+// skill + difficulty badge *before* you commit to it, not just after.
+function checkBadgeHtml(check) {
+  // difficulty_target is the real in-game DC (6-20) - see main.py's
+  // DIFFICULTY_TIERS comment for how that's derived from the raw db index.
+  const label = check.difficulty_target != null
+    ? `${check.difficulty_name} ${check.difficulty_target}`
+    : `tier ${check.difficulty_tier} (unrecognized)`;
+  return `<div class="check ${check.is_red ? "red" : "white"}">`
+       + `${check.is_red ? "RED" : "WHITE"} check &middot; ${skillOrPlain(check.skill)} &middot; ${label}`
+       + `</div>`;
+}
+
+function renderNodeHtml(entry, branchId, showCopyLink) {
+  const copyLink = showCopyLink === false ? "" :
+    `<button class="explore-btn" onclick="copyToClipboard(lineAddressUrl(${branchId}, ${entry.dentry_id}), this)">copy line address</button>`;
+  let html = `<div class="node ${entry.is_player_choice ? "you" : ""}">`;
+  html += `<div class="meta">branch ${branchId} / line ${entry.dentry_id}${copyLink}</div>`;
+  html += `<div class="speaker">${skillOrPlain(entry.speaker || "?")}</div>`;
+  if (entry.condition) {
+    html += `<div class="condition">shown only if <code>${escapeHtml(entry.condition)}</code></div>`;
+  }
+  if (entry.check) {
+    html += checkBadgeHtml(entry.check);
+    if (entry.check.modifiers.length) {
+      html += `<ul class="modifiers">` + entry.check.modifiers.map(m => {
+        const sign = m.value >= 0 ? "+" : "";
+        const cls = m.value >= 0 ? "mod-pos" : "mod-neg";
+        return `<li><span class="${cls}">${sign}${m.value}</span> ${escapeHtml(m.tooltip || m.variable)}</li>`;
+      }).join("") + `</ul>`;
+    }
+  }
+  html += `<div class="text">${escapeHtml(entry.text)}</div>`;
+  if (entry.alternates.length) {
+    html += `<div class="alts"><em>alternate lines:</em><ul>`
+          + entry.alternates.map(a => `<li>if <code>${escapeHtml(a.condition)}</code>: ${escapeHtml(a.text)}</li>`).join("")
+          + `</ul></div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+// The core of the flattening: starting at (startBranchId, startDentryId),
+// keeps auto-advancing through any node that has exactly one way forward
+// (whether that's a plain single link or a system-junction chain that
+// resolveNextOptions() already collapsed to one real option), collecting
+// every real line along the way - including lines from other branches, if
+// the only way forward happens to cross into one. It only stops to show
+// buttons once there's an actual choice (0 or 2+ options).
+async function renderChainFrom(startBranchId, startDentryId) {
+  const out = document.getElementById("explorer");
+  // What "back" will find the predecessor of, next time it's pressed - see
+  // goBack(). This is the walk's *start* point, not wherever it stops -
+  // going back needs to reach whatever preceded this whole flattened
+  // block, not one step into the middle of it.
+  currentAnchorBranchId = startBranchId;
+  currentAnchorDentryId = startDentryId;
+
+  if (!branchData || branchData.branch_id !== startBranchId) {
+    out.textContent = "loading...";
+    try {
+      await switchToBranch(startBranchId);
+    } catch (e) {
+      out.textContent = "failed: " + e;
+      return;
+    }
+  }
+
+  let dentryId = startDentryId;
+  let currentBranchId = startBranchId;
+  const collected = [];
+  const visited = new Set();
+  let finalOptions = [];
+  let activeCheckFlag = null;  // sticks until the next real check overwrites it
+
+  while (true) {
+    const key = currentBranchId + ":" + dentryId;
+    if (visited.has(key)) { finalOptions = []; break; }  // cycle guard - stop rather than loop forever
+    visited.add(key);
+
+    const entry = entriesById[dentryId];
+    if (entry && !entry.is_system) {
+      collected.push({ branchId: currentBranchId, entry });
+      if (entry.check) activeCheckFlag = entry.check.flag;
+    }
+
+    const opts = resolveNextOptions(dentryId, activeCheckFlag);
+    if (opts.length !== 1) { finalOptions = opts; break; }  // dead end, or a real choice - stop here
+
+    const only = opts[0];
+    if (only.type === "cross") {
+      try {
+        await switchToBranch(only.toBranch);
+      } catch (e) {
+        out.textContent = "failed: " + e;
+        return;
+      }
+      currentBranchId = only.toBranch;
+      dentryId = only.toDentry;
+    } else {
+      dentryId = only.dentryId;
+    }
+  }
+
+  currentDentryId = dentryId;
+  currentBranchId_global = currentBranchId;
+  currentOptions = finalOptions;
+
+  const html = collected.map(({ branchId, entry }) => renderNodeHtml(entry, branchId)).join("")
+    + renderOptions(finalOptions);
+  out.innerHTML = html;
+
+  // Keep the address bar reflecting exactly where we are, without spamming
+  // browser history per click - see the router comment above for why this
+  // is replaceState rather than navigate()/pushState. Bug fixed here: this
+  // used to always write rootBranchId (the branch first opened), not
+  // currentBranchId (the branch dentryId actually belongs to) - since a
+  // flattened walk can cross into a different branch entirely, that made
+  // the address bar (and anything copied from it) point at the wrong
+  // branch/line pair whenever that happened.
+  history.replaceState(
+    { view: "branch", branch: currentBranchId, at: dentryId },
+    "",
+    `?view=branch&branch=${currentBranchId}&at=${dentryId}`
+  );
+}
+
+// Entry point from the router: loads branchId (if not already loaded) and
+// starts the flattened walk at `at` (defaults to the branch's root, 0).
+async function runBranchExplorer(branch, at) {
+  const out = document.getElementById("explorer");
+  if (!branch) {
+    out.textContent = "no branch specified.";
+    return;
+  }
+  const branchId = Number(branch);
+  const startDentry = (at !== undefined && at !== null && at !== "") ? Number(at) : 0;
+
+  document.getElementById("branchJumpInput").value = "";
+  document.getElementById("explorer-controls").style.display = "block";
+  rootBranchId = branchId;
+
+  if (!branchData || branchData.branch_id !== branchId) {
+    branchData = null;
+    out.textContent = "loading...";
+    try {
+      await switchToBranch(branchId);
+    } catch (e) {
+      out.textContent = "failed: " + e;
+      return;
+    }
+  }
+  if (!(startDentry in entriesById)) {
+    out.textContent = `line ${startDentry} not found in branch ${branchId}.`;
+    return;
+  }
+  await renderChainFrom(branchId, startDentry);
+}
+
+// The in-explorer "jump" box - accepts a plain branch id ("182") to hop to
+// a different branch entirely, or a branch/line pin ("182/23") to jump to
+// an exact point. Goes through navigate() so it's a real, back-button-able
+// top-level move (unlike clicking an option, which stays inside the
+// current branch's own history stack).
+function submitBranchJump() {
+  const raw = document.getElementById("branchJumpInput").value.trim();
+  if (!raw) return;
+  const pinned = parseBranchLine(raw);
+  if (pinned) {
+    navigate({ view: "branch", branch: pinned.branch, at: pinned.id });
+  } else if (/^\d+$/.test(raw)) {
+    navigate({ view: "branch", branch: Number(raw) });
+  } else {
+    document.getElementById("explorer").textContent =
+      "invalid input - use a branch id (182) or branch/line (182/23)";
+  }
+}
+
+// A "success"/"failure" outcome (see resolveNextOptions) gets a marker on
+// the right side of its button - separate from the left-side accent
+// borders (you/cross), which mark a different axis (who/what kind of
+// option this is, not whether it's the pass or fail path of a check).
+function outcomeTag(outcome) {
+  if (outcome === "success") return `<span class="outcome success">&#10003; success</span>`;
+  if (outcome === "failure") return `<span class="outcome failure">&#10007; failure</span>`;
+  return "";
+}
+
+function renderOptions(options) {
+  if (!options.length) {
+    return `<p class="end">[end of visible branch content]</p>`;
+  }
+
+  // Some branches genuinely contain two different dentries with identical
+  // text (confirmed against real data, e.g. 569/6 and 569/289 - same actor,
+  // no distinguishing condition/check, even the same destination; looks
+  // like a Chat Mapper authoring artifact, not something to "fix"). When
+  // that happens the [branch/id] tag is the only thing telling them apart,
+  // so it needs to be loud enough to notice instead of blending in.
+  const previewCounts = {};
+  for (const o of options) {
+    if (o.type === "line") {
+      const e = entriesById[o.dentryId];
+      const preview = e && e.text || "";
+      previewCounts[preview] = (previewCounts[preview] || 0) + 1;
+    }
+  }
+
+  return `<div class="options">` + options.map((o, i) => {
+    const outcomeCls = o.outcome ? ` outcome-${o.outcome}` : "";
+    // Never evaluated (no live game state to check against) - just surfaced
+    // so a variable-gated alternative isn't presented as an unconditional
+    // choice. Kept separate from the outcome tag, which already conveys
+    // the check-pass/fail gate specifically.
+    const condHtml = (o.conditions && o.conditions.length)
+      ? `<div class="opt-condition">requires: ` + o.conditions.map(c => `<code>${escapeHtml(c)}</code>`).join(" and ") + `</div>`
+      : "";
+
+    if (o.type === "cross") {
+      return `<button class="cross${outcomeCls}" onclick="chooseOption(${i})">`
+           + `<div class="opt-row"><span>&#8618; leaves to branch ${o.toBranch}</span>${outcomeTag(o.outcome)}</div>`
+           + condHtml + `</button>`;
+    }
+    const e = entriesById[o.dentryId];
+    const preview = (e.text || "").length > 90 ? e.text.slice(0, 90) + "..." : (e.text || "");
+    const cls = (e.is_player_choice ? "you" : "") + outcomeCls;
+    // Who says this line matters for telling options apart at a glance -
+    // previously only "you" got any speaker indication (the prefix below),
+    // everyone/everything else was unlabeled.
+    const speakerLabel = skillOrPlain(e.speaker || "?");
+    const prefix = e.is_player_choice ? "&raquo; " : "";
+    const isDuplicate = previewCounts[e.text || ""] > 1;
+    // line options always land in the branch currently being walked -
+    // cross options already state their own destination branch above.
+    const idTag = `<span class="opt-id${isDuplicate ? " opt-id-dup" : ""}">[${currentBranchId_global}/${o.dentryId}]</span>`;
+    // Committing to this option means committing to its check, if it has
+    // one - that needs to be visible before the click, not just after.
+    const checkHtml = e.check ? checkBadgeHtml(e.check) : "";
+    return `<button class="${cls}" onclick="chooseOption(${i})">`
+         + `<div class="opt-row"><span>${idTag} ${speakerLabel}: ${prefix}${escapeHtml(preview)}</span>${outcomeTag(o.outcome)}</div>`
+         + checkHtml + condHtml + `</button>`;
+  }).join("") + `</div>`;
+}
+
+// history stores the state right before each *shown* choice, i.e. the
+// (branch, dentry) that renderChainFrom was last called with - going back
+// re-walks forward from there, deterministically reproducing the same
+// flattened chain + choice buttons.
+async function chooseOption(i) {
+  const opt = currentOptions[i];
+  if (opt.type === "cross") {
+    await renderChainFrom(opt.toBranch, opt.toDentry);
+  } else {
+    await renderChainFrom(currentBranchId_global, opt.dentryId);
+  }
+}
+
+// --- graph-native "back" ----------------------------------------------
+// Deliberately NOT a replay of this session's clicks (that's what the old
+// historyStack-based version did). "Back" is defined purely by the tree's
+// own structure: the nearest real (non-system) predecessor of wherever
+// the current flattened walk started - found via the new
+// /branches/{id}/lines/{id}/predecessors endpoint, walking backward
+// through system/junction nodes exactly symmetrically to how the forward
+// walk skips over them. This works identically regardless of *how* the
+// user arrived at the current screen - a chain of clicks, a search
+// result, a pasted line address, whatever - since it never consults
+// session history, only the graph itself. It can cross a branch boundary
+// backward too, same as the forward walk can cross one forward, and it
+// naturally bottoms out at a branch's true root (no incoming edges left),
+// where it returns null and the button just does nothing further.
+//
+// When a node has more than one incoming edge (some genuinely do - see
+// the duplicate-option findings from earlier in this project), which one
+// counts as "the" predecessor is inherently ambiguous in a graph that
+// isn't strictly tree-shaped. Resolved with one fixed, deterministic rule
+// (lowest branch id, then lowest dentry id) rather than trying to guess
+// "the" one true path - same class of tradeoff as the duplicate-option
+// highlighting elsewhere in this tool.
+
+async function fetchLineInfo(branchId, dentryId) {
+  const key = `${branchId}:${dentryId}`;
+  if (lineInfoCache[key]) return lineInfoCache[key];
+  const res = await fetch(`branches/${branchId}/lines/${dentryId}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  lineInfoCache[key] = data;
+  return data;
+}
+
+async function fetchPredecessors(branchId, dentryId) {
+  const res = await fetch(`branches/${branchId}/lines/${dentryId}/predecessors`);
+  if (!res.ok) return [];
+  return await res.json();
+}
+
+async function resolvePrevReal(branchId, dentryId, visited) {
+  visited = visited || new Set();
+  const key = `${branchId}:${dentryId}`;
+  if (visited.has(key)) return null;  // cycle guard, same reasoning as the forward walk
+  visited.add(key);
+
+  const preds = await fetchPredecessors(branchId, dentryId);
+  if (!preds.length) return null;  // true root - nothing points here at all
+
+  preds.sort((a, b) => a.branch_id - b.branch_id || a.dentry_id - b.dentry_id);
+
+  for (const p of preds) {
+    const info = await fetchLineInfo(p.branch_id, p.dentry_id);
+    if (!info) continue;
+    if (!info.is_system) {
+      return { branchId: p.branch_id, dentryId: p.dentry_id };
+    }
+    const deeper = await resolvePrevReal(p.branch_id, p.dentry_id, visited);
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+async function goBack() {
+  const out = document.getElementById("explorer");
+  const backBtn = document.getElementById("backBtn");
+  if (backBtn) backBtn.disabled = true;
+  try {
+    const prev = await resolvePrevReal(currentAnchorBranchId, currentAnchorDentryId);
+    if (!prev) {
+      const status = document.getElementById("explorerTitle");
+      const orig = status.textContent;
+      status.textContent = "(already at the branch's root - nothing further back)";
+      setTimeout(() => { status.textContent = orig; }, 2000);
+      return;
+    }
+    await renderChainFrom(prev.branchId, prev.dentryId);
+  } finally {
+    if (backBtn) backBtn.disabled = false;
+  }
+}
+
+async function restartBranch() {
+  await renderChainFrom(rootBranchId, 0);
+}
+
+// --- site header + update check ----------------------------------------
+// The "back to home" link only makes sense on the real arda0.net
+// deployment - a self-hoster running their own copy of this repo doesn't
+// want a link pointing at someone else's site, so it's only inserted
+// (never just hidden via CSS, to avoid a flash-then-hide) when the page
+// is actually being viewed on arda0.net.
+if (location.hostname === "arda0.net") {
+  document.getElementById("site-header").innerHTML =
+    `<a href="https://arda0.net" class="back-link">&larr; back to home</a>`;
+}
+
+// Compares this deployment's version.txt against the same file on the
+// configured GitHub repo's main branch. Entirely client-side, entirely
+// optional (config.yaml's update_check.enabled, on by default) - failure
+// (offline, GitHub rate-limited, repo not published yet) is silent, this
+// is a courtesy notice, not something to ever block or nag about.
+async function checkForUpdate() {
+  try {
+    const cfg = await (await fetch("app-config")).json();
+    if (!cfg.update_check_enabled) return;
+
+    const localVersion = (await (await fetch("version.txt")).text()).trim();
+    const remoteRes = await fetch(
+      `https://raw.githubusercontent.com/${cfg.github_repo}/main/version.txt`
+    );
+    if (!remoteRes.ok) return;  // repo/file not published yet, or offline - say nothing
+    const remoteVersion = (await remoteRes.text()).trim();
+
+    if (remoteVersion && remoteVersion !== localVersion) {
+      document.getElementById("version-notice").innerHTML =
+        `a newer version is available on `
+        + `<a href="https://github.com/${cfg.github_repo}" target="_blank" rel="noopener">GitHub</a>`
+        + ` (running ${escapeHtml(localVersion)}, latest is ${escapeHtml(remoteVersion)})`;
+    }
+  } catch (e) {
+    // offline, CORS hiccup, whatever - not worth surfacing for a courtesy check
+  }
+}
+checkForUpdate();
+
+// --- boot -------------------------------------------------------------
+render(Object.fromEntries(new URLSearchParams(location.search)));
+</script>
+</body>
+</html>

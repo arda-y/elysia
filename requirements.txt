@@ -1,0 +1,7 @@
+fastapi
+slowapi
+uvicorn
+sqlalchemy
+aiosqlite
+pyyaml
+httpx

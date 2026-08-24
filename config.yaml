@@ -1,0 +1,28 @@
+# elysia configuration
+#
+# Applied at process startup - restart the container after changing this.
+
+rate_limits:
+  # every endpoint except database_download below
+  default: "20/minute"
+  # GET /database/download - a ~23MB file, deliberately much stricter than
+  # a normal query. The `limits` library has no native "week" granularity;
+  # "2/7 days" is the equivalent.
+  database_download: "2/7 days"
+
+# Compares this deployment's version.txt against the same file on GitHub's
+# main branch and shows a small notice in the frontend if they differ.
+# No data leaves the browser for this - it's a plain client-side fetch of
+# a public raw.githubusercontent.com file, not a request to any server
+# this project controls.
+update_check:
+  enabled: true
+  github_repo: "arda-y/elysia"
+
+# A single POST to https://arda0.net/elysia/telemetry on process startup,
+# always the same fixed payload ({"message": "a new box has woken up"}) -
+# no hostname, IP, version, or anything else box-identifying is included
+# in it. Off by default - see readme.md for the full explanation of what
+# this does and doesn't send.
+telemetry:
+  enabled: false

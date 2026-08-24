@@ -1,0 +1,8 @@
+.vscode
+*.db
+# the one exception: the seed database this project actually needs to run -
+# without it, a fresh clone starts with an empty db and the app fails to
+# boot (lifespan check queries a table that doesn't exist yet).
+!mountpoint/DiscoElysium.db
+__pycache__
+test*

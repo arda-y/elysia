@@ -1,0 +1,8 @@
+# all values can be changed to your liking, provided you know what you are doing
+services:
+  elysia:
+    build: .
+    container_name: elysia
+    restart: always
+    ports:
+      - "127.0.0.1:2005:2005"
