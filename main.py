@@ -647,14 +647,24 @@ def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
             "flag": check_row.flagname,
             # sorted positive-first (descending value) so bonuses and
             # penalties group together instead of interleaving in
-            # whatever order the source db happened to store them in
+            # whatever order the source db happened to store them in.
+            # modifiers.modifier is usually a real +/- int, but a handful
+            # of rows (confirmed on branch 1015, "MERC TRIBUNAL" etc.)
+            # carry an empty string instead - they're section-header-style
+            # rows (blank variable too, tooltip-only), not a real numeric
+            # modifier, and crashed this sort outright before. Coerced to
+            # 0 for sorting/sign purposes rather than dropped, since the
+            # tooltip text itself is still real and worth showing.
             "modifiers": [
                 {
                     "variable": _strip_script_boilerplate(mod.variable),
-                    "value": mod.modifier,
+                    "value": mod.modifier if isinstance(mod.modifier, (int, float)) else 0,
                     "tooltip": mod.tooltip,
                 }
-                for mod in sorted(modifier_rows, key=lambda m: -m.modifier)
+                for mod in sorted(
+                    modifier_rows,
+                    key=lambda m: -(m.modifier if isinstance(m.modifier, (int, float)) else 0),
+                )
             ],
         }
 
@@ -814,7 +824,59 @@ async def _fetch_branch(conversation_id: int):
             "description": dialogue.description,
             "entries": entries,
             "links": links,
+            "default_entry_dentry_id": _compute_default_entry(entries, links),
         }
+
+
+def _compute_default_entry(entries: list[dict], links: list[dict]) -> int:
+    """Normally dentry 0 (via its is_system HUB/"input" chain) reaches the
+    branch's real content - the frontend already walks/skips system nodes
+    to find it, so 0 is always a safe default start. But confirmed via a
+    full scan of every branch in the db (not assumed): 30 branches have a
+    disconnected graph where dentry 0's own reachable component contains
+    zero real (non-system) content, while the actual scene sits in a
+    separate component nothing links back into 0 for. Branch 1235 is one -
+    "input" (dentry 1) dead-ends with no outgoing links at all, while the
+    real "Time to get my gun!" scene starts at dentry 2, which has zero
+    incoming links of its own. Previously the explorer always opened at 0
+    regardless, so these branches just rendered as empty/"end of visible
+    branch content" with no explanation. Falls back to the lowest-id real
+    dentry that has no incoming link within the branch - the same kind of
+    "true root" dentry 0 already is for every normal branch - only when
+    0's own component turns out to have no real content."""
+    entries_by_id = {e["dentry_id"]: e for e in entries}
+    if 0 not in entries_by_id:
+        return 0
+    succs: dict[int, list[int]] = {}
+    for l in links:
+        if not l["leaves_branch"]:
+            succs.setdefault(l["from_dentry_id"], []).append(l["to_dentry_id"])
+
+    def reaches_real_content(start: int) -> bool:
+        seen: set[int] = set()
+        stack = [start]
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            e = entries_by_id.get(n)
+            if e and not e["is_system"]:
+                return True
+            for s in succs.get(n, []):
+                if s not in seen:
+                    stack.append(s)
+        return False
+
+    if reaches_real_content(0):
+        return 0
+
+    has_incoming = {l["to_dentry_id"] for l in links if not l["leaves_branch"]}
+    real_roots = sorted(
+        did for did, e in entries_by_id.items()
+        if not e["is_system"] and did not in has_incoming
+    )
+    return real_roots[0] if real_roots else 0
 
 
 # The Lua "effect" snippet (dentries.userscript) is one or more function

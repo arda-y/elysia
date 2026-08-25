@@ -20,6 +20,8 @@
   .toolbar input[type=text] { flex: 1; min-width: 120px; }
   #home-character { max-width: 220px; }
   .result-item { border-bottom: 1px solid #ccc; padding: 0.5rem 0; }
+  .spoiler { background: #333; color: transparent; border-radius: 3px; cursor: pointer; padding: 0 0.15em; transition: none; }
+  .spoiler.revealed { background: transparent; color: inherit; cursor: text; }
   .meta { color: #666; font-size: 0.8rem; }
   .explore-btn { margin-left: 0.5rem; font-size: 0.75rem; }
   .skill-badge { color: #fff; font-weight: bold; padding: 0.05rem 0.4rem; border-radius: 3px; }
@@ -68,6 +70,15 @@
     border-left: 3px solid #b58a2e; padding-left: 0.5rem;
   }
   #explorer .effect code, #line-detail .effect code { color: #333; }
+  /* A raw userscript/condition call (e.g.
+     SetVariableValue("boardwalk.pigs_espirt_morrands_from_trafic", true))
+     is often one long unbroken identifier - <code> doesn't wrap by
+     default, so it was overflowing straight past the node's own left
+     border instead of staying inside it. Applies everywhere a raw
+     script/condition string is shown, not just .effect/.condition. */
+  #explorer code, #line-detail code, #search-results code {
+    overflow-wrap: anywhere; word-break: break-word;
+  }
   #explorer .modifiers, #line-detail .modifiers { font-size: 0.75rem; margin-top: 0.2rem; }
   #explorer .modifiers li, #line-detail .modifiers li { list-style: none; }
   #explorer .mod-pos, #line-detail .mod-pos { color: #1a6b2e; font-weight: bold; }
@@ -368,26 +379,28 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "1.2.1", changes: [
+    "Fixed long script/condition text (e.g. a SetVariableValue(...) call) overflowing its box in the branch explorer and line viewer instead of wrapping",
+    "Fixed some branches opening to a blank page instead of their real content - a handful had a starting point disconnected from where the actual scene lives, so the site now finds and opens the real starting point instead (affected 30 branches)",
+    "Fixed a crash when opening a branch where a check's bonus/penalty was stored as text instead of a number",
+  ]},
   { version: "1.2.0", changes: [
-    "Surfaced passive skill checks (e.g. Volition/Shivers speaking unprompted) with the skill level they require to trigger",
+    "Added passive skill checks (e.g. Volition/Shivers speaking unprompted) to the explorer, showing the skill level needed to trigger one and any branching condition behind it - both before picking an option and after",
     "Removed the difficulty tier name (Trivial/Easy/.../Impossible) from check displays - kept the DC number only",
     "Added this updates/changelog page",
-    "Fixed dresscode/CheckEquipped modifier requirements not displaying in frontend",
-    "Fixed address bar/reload losing the branch-crossing path in the explorer",
-    "Fixed a real data-loss bug: game-state effects (GainItem, SetVariableValue, ...) were queried nowhere and shown nowhere",
-    "Fixed branch descriptions not showing in the branch explorer - most ORB branches rely entirely on this field for content",
-    "ORB search results now skip the dead-end \"open branch\" button for content-less ORBs and offer a standalone view + copyable link instead",
-    "Fixed multi-word search silently returning zero results whenever a common 1-2 letter word (he, to, a, is, ...) was included",
-    "Short search terms are now actually required via a fallback match instead of being silently ignored",
-    "Fixed the line viewer rendering unstyled",
-    "Stripped inert Chat Mapper authoring-tool boilerplate from the effect field, and later from conditions, modifiers, alternate lines, and line titles too - handled consistently everywhere it can appear",
+    "Added clothing/equipment modifiers for certain options",
+    "Fixed reloading the page losing your place when a branch had linear progression from user entry point to the branch",
+    "Added display for item grants, stat changes, and other game-state effects",
+    "Fixed ORB branches showing no content or a dead-end link - most rely entirely on their description text, which now shows directly, with a copyable link for ones that have nothing else",
+    "Fixed multi-word search returning zero results whenever a short common word (he, to, a, is, ...) was included, and made those words actually count toward narrowing results instead of being ignored",
+    "Fixed the single-line viewer page displaying without any styling",
+    "Removed leftover authoring-tool text that was leaking into effect, condition, and title fields",
     "Added real query timing shown on every page that fetches results",
-    "Fixed the update-check notice showing up even when the running version was newer than GitHub's, not just different - was a plain inequality, now a real version comparison",
-    "Container now runs as a non-root user instead of root",
-    "Fixed a passive Encyclopedia check's threshold not showing before picking the option that leads to it, and its gating condition disappearing once chosen",
+    "Fixed the update notice appearing even when your version was already newer than what's on GitHub (focused for developers)",
+    "Hardened the server container to run without root privileges (focused for developers)",
     "Added an effect browser - pick any effect (GainItem, DamageVolition, ...) from a dropdown and see every line that triggers it",
     "Added a checks browser - filter every skill check in the game by RED/WHITE, skill, and required skill level",
-    "Fixed \"back\" looping forever in branches where the dialogue graph genuinely cycles (e.g. the phone booth scene)",
+    "Implemented a loop detector to branches where the dialogue graph genuinely cycles, like the {{spoiler:phone booth}} scene.",
   ]},
   { version: "1.1.0", changes: [
     "Added ORB browsing",
@@ -401,12 +414,24 @@ const CHANGELOG = [
   ]},
 ];
 
+// A changelog entry can mark a spoiler-y detail (e.g. naming a specific
+// scene) with {{spoiler:...}} - rendered blacked-out and click-to-reveal,
+// rather than just writing it plainly. Applied to the already-escaped
+// text, so this can't be used to inject real markup, only to wrap a
+// literal already-escaped substring in the reveal span.
+function renderChangeLine(c) {
+  return escapeHtml(c).replace(
+    /\{\{spoiler:([^}]+)\}\}/g,
+    `<span class="spoiler" onclick="this.classList.toggle('revealed')">$1</span>`
+  );
+}
+
 function renderUpdates() {
   const out = document.getElementById("updates-list");
   out.innerHTML = CHANGELOG.map(rel => `
     <div class="result-item">
       <div><strong>v${escapeHtml(rel.version)}</strong></div>
-      <ul>${rel.changes.map(c => `<li>${escapeHtml(c)}</li>`).join("")}</ul>
+      <ul>${rel.changes.map(c => `<li>${renderChangeLine(c)}</li>`).join("")}</ul>
     </div>
   `).join("");
 }
@@ -1134,7 +1159,7 @@ async function runBranchExplorer(branch, at) {
   }
   backTrail = new Set();  // fresh entry point, not a continuation of "back" presses
   const branchId = Number(branch);
-  const startDentry = (at !== undefined && at !== null && at !== "") ? Number(at) : 0;
+  const atGiven = at !== undefined && at !== null && at !== "";
 
   document.getElementById("branchJumpInput").value = "";
   document.getElementById("explorer-controls").style.display = "block";
@@ -1150,6 +1175,15 @@ async function runBranchExplorer(branch, at) {
       return;
     }
   }
+  // Plain dentry 0 is the safe default for almost every branch (the
+  // forward walk already skips through its is_system HUB/"input" chain to
+  // reach real content) - but see _compute_default_entry's comment on the
+  // backend: a handful of branches have dentry 0 sitting in a disconnected
+  // part of the graph with no real content in it at all, while the actual
+  // scene starts somewhere else entirely. default_entry_dentry_id is 0
+  // for every normal branch and only differs for those - only used when
+  // the caller didn't pin an exact line explicitly.
+  const startDentry = atGiven ? Number(at) : (branchData.default_entry_dentry_id ?? 0);
   if (!(startDentry in entriesById)) {
     out.textContent = `line ${startDentry} not found in branch ${branchId}.`;
     return;
@@ -1359,7 +1393,9 @@ async function goBack() {
 
 async function restartBranch() {
   backTrail = new Set();  // a forward move breaks any "back" streak
-  await renderChainFrom(rootBranchId, 0);
+  const restartDentry = (branchData && branchData.branch_id === rootBranchId)
+    ? (branchData.default_entry_dentry_id ?? 0) : 0;
+  await renderChainFrom(rootBranchId, restartDentry);
 }
 
 // --- site header + update check ----------------------------------------
