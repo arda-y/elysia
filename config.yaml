@@ -3,12 +3,15 @@
 # Applied at process startup - restart the container after changing this.
 
 rate_limits:
-  # every endpoint except database_download below
+  # every endpoint except the two downloads below
   default: "20/minute"
-  # GET /database/download - a ~23MB file, deliberately much stricter than
-  # a normal query. The `limits` library has no native "week" granularity;
-  # "2/7 days" is the equivalent.
-  database_download: "2/7 days"
+  # GET /database/download and GET /optimizer/download - deliberately much
+  # stricter than a normal query (a ~23MB file and a much smaller ~80KB
+  # script respectively, but both file downloads, not cheap queries). The
+  # `limits` library has no native "week" granularity; "5/7 days" is the
+  # equivalent.
+  database_download: "5/7 days"
+  optimizer_download: "5/7 days"
 
 # Compares this deployment's version.txt against the same file on GitHub's
 # main branch and shows a small notice in the frontend if they differ.

@@ -379,6 +379,12 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "1.3.0", changes: [
+    "Fixed some branches still not showing all of their content - a few had a second (or third) separate disconnected piece that the previous fix missed",
+    "Removed 6 confirmed leftover duplicate lines that didn't belong in the game data at all",
+    "Added a downloadable script that turns the original database into the optimized/search-ready one yourself, without needing to run this project - see the download link on the main page",
+    "Raised the database download limit from 2 to 5 per week",
+  ]},
   { version: "1.2.3", changes: [
     "Fixed the query timer always showing 0.0ms on a branch's first load, and after using the \"back\" button - it now reflects the real cost each time",
     "Sped up the \"back\" button noticeably - it was scanning the entire link table with no index every time",
@@ -461,6 +467,7 @@ function renderHome() {
         <div class="landing-links">
           <a href="https://github.com/arda-y/elysia" target="_blank" rel="noopener">${GITHUB_ICON} GitHub</a>
           <a href="database/download">${DOWNLOAD_ICON} Download database</a>
+          <a href="optimizer/download">${DOWNLOAD_ICON} Download optimizer.sql</a>
         </div>
         <p class="meta">inspired by <a href="http://fayde.co.uk/" target="_blank" rel="noopener">fayde.co.uk</a></p>
         <div class="landing-contact meta">

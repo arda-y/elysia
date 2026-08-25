@@ -58,20 +58,53 @@ needs to persist outside the container). You can:
   automatically on first startup from whatever `DiscoElysium.db` is
   actually present, so it can never go stale against a substituted file.
 
-`OptimizedDE.db` is a derived copy used *only* by `/search/lines` and
-`/search/branches` - it's not committed (it's fully reproducible, and
-shipping a ~44MB generated file alongside a ~23MB source one is wasteful)
-and it's never what `/database/download` serves. Every other endpoint,
-and every download, always reads/serves the original `DiscoElysium.db`
-untouched.
+`OptimizedDE.db` is a derived copy that every live endpoint actually
+reads from (not just search) - it's not committed (it's fully
+reproducible, and shipping a ~44MB generated file alongside a ~23MB
+source one is wasteful) and it's never what `/database/download` serves.
+`/database/download` and nothing else always reads/serves the original
+`DiscoElysium.db` untouched - the source file is never written to by
+anything here.
+
+Beyond the FTS5 search indexes, building `OptimizedDE.db` also applies
+every data-quality fix this project has found in the source export, so
+the original is never modified to get them: coercing a handful of
+bad-type cells, un-inverting `modifiers.modifier`'s sign (confirmed
+backwards relative to the real game - see `main.py`'s
+`_invert_modifier_signs`), stripping leftover Chat Mapper authoring-tool
+boilerplate text, indexing `dlinks` (unindexed in the source schema),
+welding branches whose graph doesn't connect their own start to their
+real content, and removing a handful of confirmed decommissioned
+duplicate lines. See `main.py`'s `ensure_optimized_db()` for the full,
+current list and the reasoning behind each one.
+
+**`OptimizedDE.sql`** (committed, ~80KB) applies the exact same fixes in
+one pass of plain SQL, for anyone who wants the optimized database
+without running this project at all - no Docker, no Python, just
+`sqlite3`:
+
+```sh
+cp DiscoElysium.db OptimizedDE.db
+sqlite3 OptimizedDE.db < OptimizedDE.sql
+```
+
+The graph-derived fixes (which branches got welded, which dentries got
+removed) were computed once by actually walking the whole dialogue graph
+in Python - since the source dataset is static, that file bakes in the
+literal result of that traversal as plain `INSERT`/`DELETE` statements
+rather than re-deriving it every time. If `DiscoElysium.db` is ever
+replaced with a different export, this file's baked-in graph fixes won't
+necessarily still apply correctly - run the app once against the new
+file and let `ensure_optimized_db()` regenerate `OptimizedDE.db` from
+scratch instead.
 
 The schema is used as-is (`actors`, `dialogues`, `dentries`, `dlinks`,
-`checks`, `modifiers`, `alternates`) - nothing is transformed on import,
-only interpreted at query time (see `main.py`'s `_build_entry` and the
-`DIFFICULTY_TIERS` table for the one real correction applied: the raw
-`checks.difficulty` column is an internal 0-14 authoring-tool tier
-index, not the in-game target number, and is converted to the real
-6-20 DC here).
+`checks`, `modifiers`, `alternates`) - nothing beyond the fixes above is
+transformed, everything else is only interpreted at query time (see
+`main.py`'s `_build_entry` and the `DIFFICULTY_TIERS` table for one such
+correction: the raw `checks.difficulty` column is an internal 0-14
+authoring-tool tier index, not the in-game target number, and is
+converted to the real 6-20 DC here).
 
 ## Running it
 

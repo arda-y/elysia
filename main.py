@@ -68,7 +68,11 @@ def load_config() -> dict:
     runtime, so a broken/absent config degrades gracefully rather than
     crashing startup."""
     defaults = {
-        "rate_limits": {"default": "20/minute", "database_download": "2/7 days"},
+        "rate_limits": {
+            "default": "20/minute",
+            "database_download": "5/7 days",
+            "optimizer_download": "5/7 days",
+        },
         "update_check": {"enabled": True, "github_repo": "arda-y/elysia"},
         "telemetry": {"enabled": False},
     }
@@ -90,6 +94,7 @@ def load_config() -> dict:
 CONFIG = load_config()
 RATE_LIMIT_DEFAULT = CONFIG["rate_limits"]["default"]
 RATE_LIMIT_DOWNLOAD = CONFIG["rate_limits"]["database_download"]
+RATE_LIMIT_OPTIMIZER_DOWNLOAD = CONFIG["rate_limits"]["optimizer_download"]
 
 
 def get_docker_gateway_ip() -> str | None:
@@ -261,6 +266,51 @@ def _create_checks_curated_view(conn: sqlite3.Connection) -> None:
     conn.execute(f"CREATE VIEW checks_curated AS SELECT * FROM checks WHERE conversationid NOT IN ({ids})")
 
 
+# Confirmed decommissioned duplicate content, not a whole-branch issue -
+# each of these branches otherwise has substantial content that's
+# genuinely, legitimately reachable via its real cross-branch entry point
+# (e.g. 1235 has hundreds of nodes reachable from 1222's incoming links);
+# it's specifically these individual dentries that are stale authoring
+# forks. Each duplicates a checks.flagname that's live and reachable
+# elsewhere, and - checked directly against the untouched source, not
+# assumed - is unreachable both from its own branch's dentry 0 *and* from
+# every one of its branch's real cross-branch entry points, so there's no
+# natural path to any of these regardless of how you arrive:
+#   703/503  dup of 703/53           (YARD / HANGED MAN BULLET, same branch)
+#   1235/2   dup of 1222/20          (BOARDWALK / THE PIGS RED CHECK)
+#   1015/2   dup of 1002/358         (WHIRLING F1 / RHETORIC WC)
+#   1375/19  dup of 1370/534         (TRIBUNAL / LEGITIMACY OF THIS TRIBUNAL)
+#   1376/2   dup of 1370/536         (TRIBUNAL / I GOT TO KNOW THE HANGED MAN)
+#   1403/27  dup of 1380/989         (MEASUREHEAD / FASCHA DQ)
+# A seventh candidate (700/841) was checked and ruled out - it IS reachable
+# from 700's real entry point (dentry 4, where other branches actually
+# link in), just not from dentry 0, which was never its real entry to
+# begin with. Deleted here, before _weld_disconnected_hubs runs, so the
+# weld pass naturally never sees them as something to reconnect.
+_DECOMMISSIONED_DENTRIES = {
+    (703, 503),
+    (1235, 2),
+    (1015, 2),
+    (1375, 19),
+    (1376, 2),
+    (1403, 27),
+}
+
+
+def _delete_decommissioned_dentries(conn: sqlite3.Connection) -> None:
+    for cid, did in _DECOMMISSIONED_DENTRIES:
+        conn.execute("DELETE FROM dentries WHERE conversationid = ? AND id = ?", (cid, did))
+        conn.execute("DELETE FROM checks WHERE conversationid = ? AND dialogueid = ?", (cid, did))
+        conn.execute("DELETE FROM modifiers WHERE conversationid = ? AND dialogueid = ?", (cid, did))
+        conn.execute("DELETE FROM alternates WHERE conversationid = ? AND dialogueid = ?", (cid, did))
+        conn.execute(
+            "DELETE FROM dlinks WHERE (originconversationid = ? AND origindialogueid = ?) "
+            "OR (destinationconversationid = ? AND destinationdialogueid = ?)",
+            (cid, did, cid, did),
+        )
+    print(f"  deleted {len(_DECOMMISSIONED_DENTRIES)} decommissioned duplicate dentry(ies)", flush=True)
+
+
 # dlinks has 134,491 rows across the whole db and, in the source schema,
 # no index at all - /branches/{id}/lines/{id}/predecessors (what the
 # branch explorer's "back" button calls, once per hop it walks backward)
@@ -288,28 +338,45 @@ def _is_system_row(isgroup, actor, dialoguetext) -> bool:
     return bool(isgroup) or (actor == 0 and dialoguetext in (None, "", "0"))
 
 
-# Confirmed by walking the whole graph (not assumed): 30 branches have
-# dentry 0's own reachable component containing zero real (non-system)
-# content, while the actual scene sits in a separate component nothing
-# links back into - e.g. branch 1235, where "input" (dentry 1) dead-ends
-# with no outgoing links at all, and the real "Time to get my gun!" scene
-# starts at dentry 2 with no incoming links of its own. Previously worked
-# around per-request in the API (_compute_default_entry, computing an
-# alternate start point on every /branches/{id} call) rather than fixed
-# at the source - moved here instead: this welds each dead-end system
-# leaf directly to the branch's real content with a new dlinks row, the
-# same kind of edge every other (connected) branch already has, so the
-# existing forward walk finds it automatically and dentry 0 is a safe
-# default for every branch again, no runtime detour needed.
+# Confirmed by walking the whole graph (not assumed): 81 branches have
+# real content dentry 0 can't reach. The first version of this fix (see
+# git history) only checked whether 0 reaches *any* real content at all,
+# stopping its search the moment it found one - which correctly caught
+# branches with zero reachable real content (e.g. 1235, where "input"
+# dead-ends and the real scene starts at a totally separate dentry), but
+# silently missed branches that reach *some* real content from 0 while a
+# second, third, or further disconnected island of real content sits
+# completely unreachable alongside it. Branch 1375 is the case that
+# caught this: dentry 0 does reach one real line (a lone dead-end
+# dentry), but the actual 39-line "is this tribunal legitimate" scene
+# sits in its own separate connected component nothing links to. Some
+# branches (e.g. 1395-1400, "barks" collections - a pile of independent
+# one-liner lines with no connections between them by design) have a
+# dozen or more such islands.
 #
-# 22 of the 30 have a clean real root (a real dentry with no incoming
-# link at all) to weld to. The other 8 (616, 700, 746, 759, 1025, 1186,
-# 1371, 1373) have their real content sitting entirely inside a closed
-# cycle with no natural entry point - welded to their lowest-id real
-# dentry instead, which isn't a "true root" (it has incoming edges from
-# elsewhere in its own cycle) but is a perfectly valid, deterministic
-# point to enter that cycle from, same as any of the other nodes in it
-# would be.
+# This version finds *every* unreached island, not just detects that one
+# exists: full traversal from dentry 0 (not stopping at the first real
+# node), then the leftover nodes are grouped into their own weakly-
+# connected components (an edge counts regardless of direction, since a
+# component's own internal entry point may only have *incoming* edges
+# from within that same component). Each component containing real
+# content gets its own weld - a component's "local root" (a node with no
+# incoming edge from another node in the same component) if one exists,
+# same reasoning as the original single-target case; its lowest-id real
+# dentry as a fallback for a component that's a pure cycle with no
+# natural entry (e.g. 616, 700, 746, 759, 1025, 1186, 1371, 1373).
+# Welding a system-node root (not just a real one) matters here too -
+# branch 1375's real 39-line island's own entry point is a junction node,
+# not a real line, and the existing forward walk already knows how to
+# transparently skip through a system node exactly like every other
+# branch's own HUB.
+#
+# All welds for one branch land on the same dead-end leaf reachable from
+# 0 - if a branch has multiple disconnected islands, that leaf now has
+# multiple outgoing edges, and the explorer presents them as a real
+# choice between fragments instead of transparently continuing through
+# one. That's an honest representation of what's actually in the data
+# (several unconnected pieces), not an artifact of how this was fixed.
 def _weld_disconnected_hubs(conn: sqlite3.Connection) -> None:
     dentries_by_branch: dict[int, dict[int, tuple]] = {}
     for cid, did, isgroup, actor, text in conn.execute(
@@ -317,53 +384,122 @@ def _weld_disconnected_hubs(conn: sqlite3.Connection) -> None:
     ):
         dentries_by_branch.setdefault(cid, {})[did] = (isgroup, actor, text)
 
-    links_by_branch: dict[int, dict[int, list[int]]] = {}
+    succs_by_branch: dict[int, dict[int, list[int]]] = {}
+    preds_by_branch: dict[int, dict[int, list[int]]] = {}
     for cid, origin, dest in conn.execute(
         "SELECT originconversationid, origindialogueid, destinationdialogueid FROM dlinks "
         "WHERE originconversationid = destinationconversationid"
     ):
-        links_by_branch.setdefault(cid, {}).setdefault(origin, []).append(dest)
+        succs_by_branch.setdefault(cid, {}).setdefault(origin, []).append(dest)
+        preds_by_branch.setdefault(cid, {}).setdefault(dest, []).append(origin)
 
     welds: list[tuple[int, int, int]] = []  # (branch, dead_leaf, weld_target)
     for cid, dmap in dentries_by_branch.items():
         if 0 not in dmap:
             continue
-        succs = links_by_branch.get(cid, {})
+        succs = succs_by_branch.get(cid, {})
+        preds = preds_by_branch.get(cid, {})
+        all_ids = set(dmap.keys())
+        real_ids = {did for did, row in dmap.items() if not _is_system_row(*row)}
 
+        # full reachable set from 0 - no early exit, need everything it covers
         seen: set[int] = set()
         stack = [0]
-        reaches_real = False
-        dead_leaves = []
         while stack:
             n = stack.pop()
             if n in seen:
                 continue
             seen.add(n)
-            row = dmap.get(n)
-            if row is None:
-                continue
-            if not _is_system_row(*row):
-                reaches_real = True
-                break
-            outs = succs.get(n, [])
-            if not outs:
-                dead_leaves.append(n)
-            for s in outs:
+            for s in succs.get(n, []):
                 if s not in seen:
                     stack.append(s)
-        if reaches_real or not dead_leaves:
-            continue  # normal branch, or no dead ends to weld (e.g. real content is unreachable but not via a leaf - none observed)
 
-        real_ids = sorted(did for did, row in dmap.items() if not _is_system_row(*row))
-        if not real_ids:
-            continue  # genuinely no real content (most ORBs) - nothing to weld to, and nothing wrong
+        unreached_real = real_ids - seen
+        if not unreached_real:
+            continue  # every real dentry already reachable from 0
 
-        has_incoming = {dd for outs in succs.values() for dd in outs}
-        real_roots = [did for did in real_ids if did not in has_incoming]
-        target = real_roots[0] if real_roots else real_ids[0]
+        # Prefer a dead-end system leaf within the already-reached region -
+        # welding there keeps the walk transparent for the common case (a
+        # branch that otherwise dead-ends cleanly, like the original 30).
+        # Not every branch has one though: 980 reaches ~99% of its real
+        # content from 0 through many different paths and never dead-ends
+        # into a clean system leaf at all, so its one small leftover
+        # island had nowhere to attach - falls back to dentry 0 itself,
+        # which always exists and is always a valid weld-from point. For
+        # a branch like 980 that already presents an early multi-way
+        # choice, one more option there is consistent with how it already
+        # works, not a new kind of screen.
+        dead_leaves = [n for n in seen if _is_system_row(*dmap[n]) and not succs.get(n)]
+        leaf = min(dead_leaves) if dead_leaves else 0
 
-        for leaf in dead_leaves:
-            welds.append((cid, leaf, target))
+        unreached = all_ids - seen
+
+        def neighbors(n: int) -> set[int]:
+            return set(succs.get(n, [])) | set(preds.get(n, []))
+
+        visited: set[int] = set()
+        for start in unreached:
+            if start in visited:
+                continue
+            component: set[int] = set()
+            comp_stack = [start]
+            while comp_stack:
+                x = comp_stack.pop()
+                if x in visited or x not in unreached:
+                    continue
+                visited.add(x)
+                component.add(x)
+                for nb in neighbors(x):
+                    if nb in unreached and nb not in visited:
+                        comp_stack.append(nb)
+
+            real_in_component = component & real_ids
+            if not real_in_component:
+                continue  # component is all-system, nothing real to reach here
+
+            # Picking entry points by "zero in-component incoming edges,
+            # or one arbitrary node if none" isn't reliable on its own -
+            # confirmed on two different branches: 424 had *two* separate
+            # zero-incoming nodes (722 and 723), and welding only the
+            # first left the second unreachable; 1323 had a component
+            # that looked like a single cycle (every node has an
+            # in-component predecessor, so "no local root" applied) but
+            # was actually a junction with three dead-end offshoots and
+            # only one branch that loops back - the arbitrary fallback
+            # pick landed on a dead-end offshoot, which only reaches
+            # itself and exits the component immediately, missing
+            # everything else including the loop.
+            #
+            # Greedy coverage sidesteps both failure modes without needing
+            # full strongly-connected-component analysis: repeatedly pick
+            # the lowest-id node not yet covered, walk forward from it
+            # (within the whole graph, not just this component - if it
+            # exits into already-reached territory that's harmless), mark
+            # everything that walk touches as covered, and repeat until
+            # nothing's left. A clean local root naturally gets picked
+            # first and covers its own reachable set in one pass (no
+            # different from before); a bad arbitrary pick just means the
+            # next pass picks another node and covers what the first one
+            # missed, so the component ends up fully covered regardless
+            # of its internal cycle structure.
+            covered: set[int] = set()
+            while True:
+                remaining = component - covered
+                if not remaining:
+                    break
+                pick = min(remaining)
+                welds.append((cid, leaf, pick))
+                walk_seen: set[int] = set()
+                walk_stack = [pick]
+                while walk_stack:
+                    x = walk_stack.pop()
+                    if x in walk_seen:
+                        continue
+                    walk_seen.add(x)
+                    for s in succs.get(x, []):
+                        if s not in walk_seen:
+                            walk_stack.append(s)
+                covered |= walk_seen
 
     for cid, leaf, target in welds:
         conn.execute(
@@ -372,7 +508,8 @@ def _weld_disconnected_hubs(conn: sqlite3.Connection) -> None:
             (cid, leaf, cid, target),
         )
     if welds:
-        print(f"  welded {len(welds)} disconnected branch hub(s) to their real content", flush=True)
+        branches = len({cid for cid, _, _ in welds})
+        print(f"  welded {len(welds)} disconnected content island(s) across {branches} branch(es) to reachable entry points", flush=True)
 
 
 def ensure_optimized_db() -> None:
@@ -402,6 +539,7 @@ def ensure_optimized_db() -> None:
         _clean_boilerplate_text(conn)
         _create_checks_curated_view(conn)
         _create_dlinks_index(conn)
+        _delete_decommissioned_dentries(conn)
         _weld_disconnected_hubs(conn)
         conn.executescript(
             """
@@ -1395,11 +1533,30 @@ async def download_database(request: Request):
     file, untouched, not the OptimizedDE.db copy every other endpoint
     actually reads from (see DATABASE_URL's comment) - nothing generated
     on the fly. Deliberately much stricter than every other endpoint here
-    (2/week vs 20/minute) - it's a ~23MB file, not a cheap query."""
+    (5/week vs 20/minute) - it's a ~23MB file, not a cheap query."""
     return FileResponse(
         "mountpoint/DiscoElysium.db",
         media_type="application/x-sqlite3",
         filename="DiscoElysium.db",
+    )
+
+
+@app.get("/optimizer/download")
+@limiter.limit(RATE_LIMIT_OPTIMIZER_DOWNLOAD)
+async def download_optimizer_sql(request: Request):
+    """Direct download of OptimizedDE.sql - see readme.md's Data
+    Provenance section. Applies every fix ensure_optimized_db() applies
+    at runtime (type normalization, the modifier sign fix, boilerplate
+    stripping, the dlinks index, the checks_curated view, decommissioned-
+    dentry removal, hub welding, FTS5 search indexes) as plain SQL
+    against a copy of DiscoElysium.db - no Docker or Python needed, just
+    sqlite3. Much smaller than the database itself (~80KB vs ~23MB) but
+    still a real file, not a cheap query - same rate limit as the
+    database download for the same reason."""
+    return FileResponse(
+        "OptimizedDE.sql",
+        media_type="application/sql",
+        filename="OptimizedDE.sql",
     )
 
 
