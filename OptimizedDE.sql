@@ -35,39 +35,14 @@
 
 BEGIN TRANSACTION;
 
--- 1. Coerce any bad-type value in a numeric/boolean-declared column to 0.
---    Confirmed only modifiers.modifier is actually affected in the current
---    dataset (4 rows), kept general in case a substituted source file differs.
-UPDATE dialogues SET id = 0 WHERE id IS NOT NULL AND typeof(id) NOT IN ('integer', 'real');
-UPDATE dialogues SET actor = 0 WHERE actor IS NOT NULL AND typeof(actor) NOT IN ('integer', 'real');
-UPDATE dialogues SET conversant = 0 WHERE conversant IS NOT NULL AND typeof(conversant) NOT IN ('integer', 'real');
-UPDATE actors SET id = 0 WHERE id IS NOT NULL AND typeof(id) NOT IN ('integer', 'real');
-UPDATE actors SET talkativeness = 0 WHERE talkativeness IS NOT NULL AND typeof(talkativeness) NOT IN ('integer', 'real');
-UPDATE dentries SET id = 0 WHERE id IS NOT NULL AND typeof(id) NOT IN ('integer', 'real');
-UPDATE dentries SET actor = 0 WHERE actor IS NOT NULL AND typeof(actor) NOT IN ('integer', 'real');
-UPDATE dentries SET conversant = 0 WHERE conversant IS NOT NULL AND typeof(conversant) NOT IN ('integer', 'real');
-UPDATE dentries SET conversationid = 0 WHERE conversationid IS NOT NULL AND typeof(conversationid) NOT IN ('integer', 'real');
-UPDATE dentries SET difficultypass = 0 WHERE difficultypass IS NOT NULL AND typeof(difficultypass) NOT IN ('integer', 'real');
-UPDATE dentries SET isgroup = 0 WHERE isgroup IS NOT NULL AND typeof(isgroup) NOT IN ('integer', 'real');
-UPDATE dentries SET hascheck = 0 WHERE hascheck IS NOT NULL AND typeof(hascheck) NOT IN ('integer', 'real');
-UPDATE dentries SET hasalts = 0 WHERE hasalts IS NOT NULL AND typeof(hasalts) NOT IN ('integer', 'real');
-UPDATE dlinks SET originconversationid = 0 WHERE originconversationid IS NOT NULL AND typeof(originconversationid) NOT IN ('integer', 'real');
-UPDATE dlinks SET origindialogueid = 0 WHERE origindialogueid IS NOT NULL AND typeof(origindialogueid) NOT IN ('integer', 'real');
-UPDATE dlinks SET destinationconversationid = 0 WHERE destinationconversationid IS NOT NULL AND typeof(destinationconversationid) NOT IN ('integer', 'real');
-UPDATE dlinks SET destinationdialogueid = 0 WHERE destinationdialogueid IS NOT NULL AND typeof(destinationdialogueid) NOT IN ('integer', 'real');
-UPDATE dlinks SET isConnector = 0 WHERE isConnector IS NOT NULL AND typeof(isConnector) NOT IN ('integer', 'real');
-UPDATE dlinks SET priority = 0 WHERE priority IS NOT NULL AND typeof(priority) NOT IN ('integer', 'real');
-UPDATE checks SET conversationid = 0 WHERE conversationid IS NOT NULL AND typeof(conversationid) NOT IN ('integer', 'real');
-UPDATE checks SET dialogueid = 0 WHERE dialogueid IS NOT NULL AND typeof(dialogueid) NOT IN ('integer', 'real');
-UPDATE checks SET isred = 0 WHERE isred IS NOT NULL AND typeof(isred) NOT IN ('integer', 'real');
-UPDATE checks SET difficulty = 0 WHERE difficulty IS NOT NULL AND typeof(difficulty) NOT IN ('integer', 'real');
-UPDATE checks SET forced = 0 WHERE forced IS NOT NULL AND typeof(forced) NOT IN ('integer', 'real');
-UPDATE modifiers SET conversationid = 0 WHERE conversationid IS NOT NULL AND typeof(conversationid) NOT IN ('integer', 'real');
-UPDATE modifiers SET dialogueid = 0 WHERE dialogueid IS NOT NULL AND typeof(dialogueid) NOT IN ('integer', 'real');
-UPDATE modifiers SET modifier = 0 WHERE modifier IS NOT NULL AND typeof(modifier) NOT IN ('integer', 'real');
-UPDATE alternates SET conversationid = 0 WHERE conversationid IS NOT NULL AND typeof(conversationid) NOT IN ('integer', 'real');
-UPDATE alternates SET dialogueid = 0 WHERE dialogueid IS NOT NULL AND typeof(dialogueid) NOT IN ('integer', 'real');
-UPDATE variables SET id = 0 WHERE id IS NOT NULL AND typeof(id) NOT IN ('integer', 'real');
+-- 1. Coerce the 4 confirmed bad-type modifiers.modifier rows to 0.
+--    Cherry-picked (see main.py's _normalize_numeric_columns for the
+--    general version the live app uses, which stays broad in case a
+--    substituted source file has this issue somewhere else).
+UPDATE modifiers SET modifier = 0 WHERE conversationid = 1015 AND dialogueid = 2 AND tooltip = 'MERC TRIBUNAL' AND typeof(modifier) NOT IN ('integer', 'real');
+UPDATE modifiers SET modifier = 0 WHERE conversationid = 1015 AND dialogueid = 2 AND tooltip = 'EIGHTH HARDIE' AND typeof(modifier) NOT IN ('integer', 'real');
+UPDATE modifiers SET modifier = 0 WHERE conversationid = 1015 AND dialogueid = 2 AND tooltip = 'DRUG TRADE' AND typeof(modifier) NOT IN ('integer', 'real');
+UPDATE modifiers SET modifier = 0 WHERE conversationid = 1021 AND dialogueid = 26 AND tooltip = 'EIGHTH HARDIE' AND typeof(modifier) NOT IN ('integer', 'real');
 
 -- 2. modifiers.modifier is stored inverted relative to the player-facing
 --    bonus/penalty every other source agrees on - see main.py's
