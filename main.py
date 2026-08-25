@@ -311,6 +311,69 @@ def _delete_decommissioned_dentries(conn: sqlite3.Connection) -> None:
     print(f"  deleted {len(_DECOMMISSIONED_DENTRIES)} decommissioned duplicate dentry(ies)", flush=True)
 
 
+# 5 branches whose real narrative entry point is a check that lives in a
+# DIFFERENT branch entirely - a "Jump to: [flag]" system node routes into
+# them (see the DIFFICULTY_TIERS-adjacent write-up below on why this jump
+# node, and the local Variable[flag] junction it lands on, are structurally
+# redundant re-checks of a flag the jump already decided). Confirmed for
+# each: the jump node's *only* predecessor within its own branch is
+# exactly this check dentry, and the check is real and correctly typed.
+#
+# The system hub each of these branches has locally (e.g. 1375's dentry
+# 20) is NOT being removed or bypassed - it's load-bearing for legitimate
+# in-branch looping once you're actually inside the conversation (several
+# threads reconverging on the same point without leaving the branch), and
+# the real cross-branch link chain into it (check -> jump node -> this
+# hub) already works correctly for anyone arriving via normal play. The
+# problem is narrower: only when a branch like this is opened *cold*
+# (a direct URL/search-result with no specific line pinned, or the
+# "restart branch" button) should the tool say so, instead of silently
+# entering through the local hub as if it were a real, unconditional
+# starting point. This table backs exactly that - consulted only by
+# runBranchExplorer's no-`at` path and restartBranch(), nowhere else.
+_BRANCH_TRUE_ENTRY = {
+    616: (605, 198),
+    1015: (1002, 358),
+    1025: (1002, 29),
+    1375: (1370, 534),
+    1376: (1370, 536),
+    1186: (995, 660),
+    1371: (1370, 389),
+    1373: (1370, 8),
+    1374: (1370, 12),
+    1377: (1370, 135),
+}
+
+# The specific local junction each of the 10 branches above would otherwise
+# have gotten a synthetic same-branch weld into (the Variable[flag] node a
+# jump lands on) - suppressed in _weld_disconnected_hubs since it's not
+# actually unreachable, just unreachable *from this branch's own dentry
+# 0*, which _BRANCH_TRUE_ENTRY now handles correctly instead.
+_SUPPRESSED_WELD_TARGETS = {
+    (616, 8),
+    (1015, 3),
+    (1025, 682),
+    (1375, 20),
+    (1376, 3),
+    (1186, 4),
+    (1371, 64),
+    (1373, 2),
+    (1374, 2),
+    (1377, 14),
+}
+
+
+def _create_true_entry_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE branch_true_entry (conversationid INTEGER PRIMARY KEY, "
+        "true_entry_conversationid INTEGER NOT NULL, true_entry_dialogueid INTEGER NOT NULL)"
+    )
+    conn.executemany(
+        "INSERT INTO branch_true_entry VALUES (?, ?, ?)",
+        [(cid, tcid, tdid) for cid, (tcid, tdid) in _BRANCH_TRUE_ENTRY.items()],
+    )
+
+
 # dlinks has 134,491 rows across the whole db and, in the source schema,
 # no index at all - /branches/{id}/lines/{id}/predecessors (what the
 # branch explorer's "back" button calls, once per hop it walks backward)
@@ -488,7 +551,13 @@ def _weld_disconnected_hubs(conn: sqlite3.Connection) -> None:
                 if not remaining:
                     break
                 pick = min(remaining)
-                welds.append((cid, leaf, pick))
+                # Don't fabricate a second, local entry into a node that's
+                # already legitimately reachable through the real graph -
+                # just from a different branch (see _BRANCH_TRUE_ENTRY).
+                # Still counted as covered below so nothing else tries to
+                # weld to it either.
+                if (cid, pick) not in _SUPPRESSED_WELD_TARGETS:
+                    welds.append((cid, leaf, pick))
                 walk_seen: set[int] = set()
                 walk_stack = [pick]
                 while walk_stack:
@@ -540,6 +609,7 @@ def ensure_optimized_db() -> None:
         _create_checks_curated_view(conn)
         _create_dlinks_index(conn)
         _delete_decommissioned_dentries(conn)
+        _create_true_entry_table(conn)
         _weld_disconnected_hubs(conn)
         conn.executescript(
             """
@@ -1176,12 +1246,44 @@ async def _fetch_branch(conversation_id: int):
             for row in links_result.fetchall()
         ]
 
+        # See _BRANCH_TRUE_ENTRY in the OptimizedDE.db build step - only
+        # set for the 5 branches whose real narrative entry is a check
+        # living in a different branch entirely. Included so the frontend
+        # can redirect a *cold* open (no specific line pinned) or a
+        # "restart branch" toward the real entry instead of silently
+        # walking in through the local system hub as if it were an
+        # unconditional starting point - every other way of reaching this
+        # branch (an explicit line, a search result, a mid-conversation
+        # choice) is unaffected and still goes straight to its target.
+        true_entry_result = await session.execute(
+            text(
+                "SELECT te.true_entry_conversationid, te.true_entry_dialogueid, "
+                "dl.title AS true_entry_branch_title, de.dialoguetext AS true_entry_text "
+                "FROM branch_true_entry te "
+                "LEFT JOIN dialogues dl ON dl.id = te.true_entry_conversationid "
+                "LEFT JOIN dentries de ON de.conversationid = te.true_entry_conversationid "
+                "AND de.id = te.true_entry_dialogueid "
+                "WHERE te.conversationid = :cid"
+            ),
+            {"cid": conversation_id},
+        )
+        true_entry_row = true_entry_result.first()
+        true_entry = None
+        if true_entry_row:
+            true_entry = {
+                "branch_id": true_entry_row.true_entry_conversationid,
+                "dentry_id": true_entry_row.true_entry_dialogueid,
+                "branch_title": true_entry_row.true_entry_branch_title,
+                "text": true_entry_row.true_entry_text,
+            }
+
         return {
             "branch_id": dialogue.id,
             "title": dialogue.title,
             "description": dialogue.description,
             "entries": entries,
             "links": links,
+            "true_entry": true_entry,
         }
 
 

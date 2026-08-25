@@ -379,6 +379,10 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "1.3.1", changes: [
+    "Fixed 10 branches whose real starting point is a check that lives in a different branch entirely - opening them cold (or hitting \"restart\") now points you to that real entry instead of a fabricated local one",
+    "Fixed passive skill checks (a skill \"speaking\" unprompted) sometimes being shown as a clickable choice instead of a normal line - they're never something the player picks, so they no longer stop the explorer on their own",
+  ]},
   { version: "1.3.0", changes: [
     "Fixed some branches still not showing all of their content - a few had a second (or third) separate disconnected piece that the previous fix missed",
     "Removed 6 confirmed leftover duplicate lines that didn't belong in the game data at all",
@@ -919,14 +923,15 @@ async function fetchBranch(branchId) {
 // tool never evaluates these (no live game state to check them against),
 // it just surfaces them so alternatives-by-variable are visibly labeled
 // instead of silently presented as if they were unconditional choices.
-function resolveNextOptions(dentryId, activeFlag, visited, outcome, conditions) {
+function resolveNextOptions(dentryId, activeFlag, visited, outcome, conditions, passThrough) {
   visited = visited || new Set();
   conditions = conditions || [];
+  passThrough = passThrough || [];
   const options = [];
   const links = linksByOrigin[dentryId] || [];
   for (const l of links) {
     if (l.leaves_branch) {
-      options.push({ type: "cross", toBranch: l.to_branch_id, toDentry: l.to_dentry_id, outcome: outcome || null, conditions });
+      options.push({ type: "cross", toBranch: l.to_branch_id, toDentry: l.to_dentry_id, outcome: outcome || null, conditions, passThrough });
       continue;
     }
     if (visited.has(l.to_dentry_id)) continue;
@@ -948,7 +953,23 @@ function resolveNextOptions(dentryId, activeFlag, visited, outcome, conditions) 
       }
       const nextVisited = new Set(visited);
       nextVisited.add(l.to_dentry_id);
-      options.push(...resolveNextOptions(l.to_dentry_id, activeFlag, nextVisited, nextOutcome, nextConditions));
+      options.push(...resolveNextOptions(l.to_dentry_id, activeFlag, nextVisited, nextOutcome, nextConditions, passThrough));
+    } else if (dest.passive_check) {
+      // A skill "speaking" unprompted is never a real dialogue choice - it
+      // fires (or doesn't) purely based on state, exactly like a system
+      // junction's gate, not something the player picked between. Walking
+      // straight through it instead of stopping here never actually loses
+      // a distinct path - arda, 2026-08-26: "passive checks are never a
+      // dialogue option ... a fork defeats that purpose for passive checks
+      // that doesn't even lose us paths to display." The line is still
+      // real content though, so it rides along in passThrough and gets
+      // rendered (via the normal single-hop auto-advance) once the walk
+      // actually reaches it.
+      const nextVisited = new Set(visited);
+      nextVisited.add(l.to_dentry_id);
+      const lineConditions = dest.condition ? [...conditions, dest.condition] : conditions;
+      const nextPassThrough = [...passThrough, { dentryId: l.to_dentry_id, conditions: lineConditions }];
+      options.push(...resolveNextOptions(l.to_dentry_id, activeFlag, nextVisited, outcome, [], nextPassThrough));
     } else {
       // The destination line can carry its own gating condition directly
       // (not just via an intermediate system junction) - e.g. two options
@@ -956,9 +977,45 @@ function resolveNextOptions(dentryId, activeFlag, visited, outcome, conditions) 
       // variant pair, distinguished only by their own conditionstring.
       // Missing this made such pairs look like unexplained duplicates.
       const lineConditions = dest.condition ? [...conditions, dest.condition] : conditions;
-      options.push({ type: "line", dentryId: l.to_dentry_id, outcome: outcome || null, conditions: lineConditions });
+      options.push({ type: "line", dentryId: l.to_dentry_id, outcome: outcome || null, conditions: lineConditions, passThrough });
     }
   }
+  return mergeIdenticalOptions(options);
+}
+
+// A fork whose branches only differ in whether a passive check fired along
+// the way (see the dest.passive_check case above) still produces two
+// distinct option entries pointing at the exact same real destination -
+// walking through the check or skipping it both land the player on the
+// same next content. That's not two paths, it's one path described two
+// ways, so merge them into a single option instead of stopping to ask
+// which one to click. Reached-unconditionally wins over any leftover
+// condition (if even one merged path needed no gate, the destination as a
+// whole needs no gate either - the other path's condition just describes
+// one specific way in, not a restriction on all of them).
+function mergeIdenticalOptions(options) {
+  const groups = new Map();
+  const order = [];
+  for (const o of options) {
+    const key = o.type === "cross" ? `cross:${o.toBranch}:${o.toDentry}` : `line:${o.dentryId}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(o);
+  }
+  const merged = [];
+  for (const key of order) {
+    const group = groups.get(key);
+    if (group.length === 1) { merged.push(group[0]); continue; }
+    const anyUnconditional = group.some(o => !o.conditions || o.conditions.length === 0);
+    const conditions = anyUnconditional ? [] : group[0].conditions;
+    const seenPt = new Set();
+    const passThrough = [];
+    for (const o of group) for (const pt of (o.passThrough || [])) {
+      if (!seenPt.has(pt.dentryId)) { seenPt.add(pt.dentryId); passThrough.push(pt); }
+    }
+    const withOutcome = group.find(o => o.outcome);
+    merged.push({ ...group[0], conditions, passThrough, outcome: withOutcome ? withOutcome.outcome : null });
+  }
+  return merged;
   return options;
 }
 
@@ -1134,18 +1191,31 @@ async function renderChainFrom(startBranchId, startDentryId) {
     if (opts.length !== 1) { finalOptions = opts; break; }  // dead end, or a real choice - stop here
 
     const only = opts[0];
-    pendingConditions = only.conditions || [];
-    if (only.type === "cross") {
-      try {
-        await switchToBranch(only.toBranch);
-      } catch (e) {
-        out.textContent = "failed: " + e;
-        return;
-      }
-      currentBranchId = only.toBranch;
-      dentryId = only.toDentry;
+    // If a passive check was transparently walked through to reach this
+    // option (see resolveNextOptions), step into it first instead of
+    // jumping straight to the option's own target - it's real content
+    // that still needs rendering, it's just never a stop-and-click point.
+    // Re-resolving from there naturally rediscovers whatever comes after
+    // it (including the original option, or a further passive check, or
+    // a genuine fork), the same as any other single-hop node.
+    if (only.passThrough && only.passThrough.length) {
+      const first = only.passThrough[0];
+      pendingConditions = first.conditions || [];
+      dentryId = first.dentryId;
     } else {
-      dentryId = only.dentryId;
+      pendingConditions = only.conditions || [];
+      if (only.type === "cross") {
+        try {
+          await switchToBranch(only.toBranch);
+        } catch (e) {
+          out.textContent = "failed: " + e;
+          return;
+        }
+        currentBranchId = only.toBranch;
+        dentryId = only.toDentry;
+      } else {
+        dentryId = only.dentryId;
+      }
     }
   }
 
@@ -1204,19 +1274,53 @@ async function runBranchExplorer(branch, at) {
       return;
     }
   }
-  // Plain dentry 0 is the safe default for every branch - the forward walk
-  // already skips through its is_system HUB/"input" chain to reach real
-  // content. A handful of branches used to have dentry 0 dead-ending in a
-  // disconnected part of the graph (see _weld_disconnected_hubs in
-  // main.py's OptimizedDE.db build step) - fixed at the data layer now by
-  // welding those dead ends directly to the branch's real content, so 0
-  // is reliably correct here again instead of needing a runtime detour.
+  // A handful of branches have a real narrative entry point that's a
+  // check living in a *different* branch entirely (see true_entry /
+  // _BRANCH_TRUE_ENTRY on the backend) - only relevant here, on a cold
+  // open with no specific line pinned. Anyone arriving with an explicit
+  // `at` (a search result, a copied line address, a mid-conversation
+  // choice) already knows exactly where they're going and skips this.
+  if (!atGiven && branchData.true_entry) {
+    renderTrueEntryNotice(out, branchId, branchData.true_entry);
+    return;
+  }
+  // Plain dentry 0 is the safe default for every other branch - the
+  // forward walk already skips through its is_system HUB/"input" chain to
+  // reach real content. A handful of branches used to have dentry 0
+  // dead-ending in a disconnected part of the graph (see
+  // _weld_disconnected_hubs in main.py's OptimizedDE.db build step) -
+  // fixed at the data layer now by welding those dead ends directly to
+  // the branch's real content, so 0 is reliably correct here again
+  // instead of needing a runtime detour.
   const startDentry = atGiven ? Number(at) : 0;
   if (!(startDentry in entriesById)) {
     out.textContent = `line ${startDentry} not found in branch ${branchId}.`;
     return;
   }
   await renderChainFrom(branchId, startDentry);
+}
+
+// Shown instead of the normal explorer content when cold-opening (or
+// restarting) a branch whose real entry point lives elsewhere - see
+// runBranchExplorer's true_entry check above. Offers the real entry as
+// the primary action, plus a way to see this branch's own local content
+// anyway for anyone who wants to browse it directly regardless.
+function renderTrueEntryNotice(out, branchId, trueEntry) {
+  document.getElementById("explorer-controls").style.display = "none";
+  out.innerHTML = `
+    <div class="node">
+      <div class="meta">branch ${branchId}</div>
+      <div class="text">
+        This branch's real entry point is a check in another branch -
+        ${escapeHtml(trueEntry.branch_title || `branch ${trueEntry.branch_id}`)}.
+      </div>
+      ${trueEntry.text ? `<div class="condition">"${escapeHtml(trueEntry.text)}"</div>` : ""}
+    </div>
+    <div class="toolbar">
+      <button onclick='navigate({view:"branch", branch:${trueEntry.branch_id}, at:${trueEntry.dentry_id}})'>go to the real entry &rarr;</button>
+      <button onclick='navigate({view:"branch", branch:${branchId}, at:0})'>browse this branch's own content anyway &rarr;</button>
+    </div>
+  `;
 }
 
 // The in-explorer "jump" box - accepts a plain branch id ("182") to hop to
@@ -1277,11 +1381,21 @@ function renderOptions(options) {
     const condHtml = (o.conditions && o.conditions.length)
       ? `<div class="opt-condition">requires: ` + o.conditions.map(c => `<code>${escapeHtml(c)}</code>`).join(" and ") + `</div>`
       : "";
+    // A passive check reached on the way to this option no longer stops
+    // the walk on its own (see resolveNextOptions), but if this option is
+    // still a real fork for some other reason, its badge would otherwise
+    // vanish entirely - it's now several hops behind o.dentryId, not
+    // o.dentryId itself. Preview it here instead, in the order it's
+    // actually encountered.
+    const passThroughHtml = (o.passThrough || []).map(pt => {
+      const ptEntry = entriesById[pt.dentryId];
+      return ptEntry && ptEntry.passive_check ? passiveCheckBadgeHtml(ptEntry.passive_check) : "";
+    }).join("");
 
     if (o.type === "cross") {
       return `<button class="cross${outcomeCls}" onclick="chooseOption(${i})">`
            + `<div class="opt-row"><span>&#8618; leaves to branch ${o.toBranch}</span>${outcomeTag(o.outcome)}</div>`
-           + condHtml + `</button>`;
+           + passThroughHtml + condHtml + `</button>`;
     }
     const e = entriesById[o.dentryId];
     const preview = (e.text || "").length > 90 ? e.text.slice(0, 90) + "..." : (e.text || "");
@@ -1305,7 +1419,7 @@ function renderOptions(options) {
       : e.passive_check ? passiveCheckBadgeHtml(e.passive_check) : "";
     return `<button class="${cls}" onclick="chooseOption(${i})">`
          + `<div class="opt-row"><span>${idTag} ${speakerLabel}: ${prefix}${escapeHtml(preview)}</span>${outcomeTag(o.outcome)}</div>`
-         + checkHtml + condHtml + `</button>`;
+         + passThroughHtml + checkHtml + condHtml + `</button>`;
   }).join("") + `</div>`;
 }
 
@@ -1317,7 +1431,13 @@ async function chooseOption(i) {
   backTrail = new Set();  // a forward move breaks any "back" streak
   branchQueryTimeMs = 0;  // this action's own timing window starts here
   const opt = currentOptions[i];
-  if (opt.type === "cross") {
+  if (opt.passThrough && opt.passThrough.length) {
+    // Same reasoning as the auto-advance loop in renderChainFrom - a
+    // passive check hanging off this option (which can still happen when
+    // it doesn't fully collapse the fork away) gets walked into first,
+    // not skipped, even though it's reached via an explicit click here.
+    await renderChainFrom(currentBranchId_global, opt.passThrough[0].dentryId);
+  } else if (opt.type === "cross") {
     await renderChainFrom(opt.toBranch, opt.toDentry);
   } else {
     await renderChainFrom(currentBranchId_global, opt.dentryId);
@@ -1435,6 +1555,12 @@ async function goBack() {
 async function restartBranch() {
   backTrail = new Set();  // a forward move breaks any "back" streak
   branchQueryTimeMs = 0;  // this action's own timing window starts here
+  // Same reasoning as runBranchExplorer's cold-open check - "restart" is
+  // just as much a fresh, unconditional re-entry as a cold URL open is.
+  if (branchData && branchData.branch_id === rootBranchId && branchData.true_entry) {
+    renderTrueEntryNotice(document.getElementById("explorer"), rootBranchId, branchData.true_entry);
+    return;
+  }
   await renderChainFrom(rootBranchId, 0);
 }
 
