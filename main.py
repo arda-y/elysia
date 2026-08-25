@@ -112,17 +112,133 @@ def get_docker_gateway_ip() -> str | None:
     return None
 
 
-DATABASE_URL = "sqlite+aiosqlite:///./mountpoint/DiscoElysium.db"
-# A separate copy, used only by the two /search/* endpoints, adding FTS5
-# trigram-tokenized indexes over dentries.dialoguetext and dialogues.title
-# (verified: identical result sets to the old LIKE '%q%' scan, ~80x faster
-# on a full scan). Nothing else reads from this - /branches/*, /characters,
-# and /database/download all still use the original file untouched, so a
-# download always gets the exact same file this project sources from, not
-# a derived/bloated copy (43MB vs 23MB - trigram indexes are large).
+# Every live read in this app - /branches/*, /characters, /search/*, all of
+# it - goes through OptimizedDE.db, a derived copy of DiscoElysium.db built
+# once at startup (see ensure_optimized_db below). It adds FTS5
+# trigram-tokenized indexes for /search/* (verified: identical result sets
+# to the old LIKE '%q%' scan, ~80x faster on a full scan) and, just as
+# importantly, is where any data-quality fix belongs (see
+# _normalize_numeric_columns) - the *only* place a bad-type cell in the
+# source data ever gets corrected, rather than papered over with defensive
+# coercion scattered across API code. DiscoElysium.db itself is never
+# written to by anything here and is read directly only by
+# /database/download, so a download always hands out the exact original
+# file a self-hoster substituted, malformed cells and all - "protect the
+# original file, even if it's malformed" was arda's explicit call
+# (2026-08-25), not an oversight.
+DATABASE_URL = "sqlite+aiosqlite:///./mountpoint/OptimizedDE.db"
 SEARCH_DATABASE_URL = "sqlite+aiosqlite:///./mountpoint/OptimizedDE.db"
 _SOURCE_DB_PATH = Path("mountpoint/DiscoElysium.db")
 _OPTIMIZED_DB_PATH = Path("mountpoint/OptimizedDE.db")
+
+
+# Every column the source schema declares as a numeric/boolean type
+# (INT/BOOL/REAL/INTEGER, per readme.md's schema) - SQLite doesn't
+# actually enforce this, so a column can silently hold any type per-row
+# regardless of what it's declared as. Audited the *entire* database (not
+# just the one column that already crashed a request) via
+# `SELECT typeof(col) FROM table GROUP BY typeof(col)` against every entry
+# below - confirmed the only mismatch anywhere in the current dataset is
+# modifiers.modifier (4 rows total: 3 on branch 1015, 1 on branch 1021 -
+# category-header-style rows like "MERC TRIBUNAL" with an empty string
+# instead of a real +/- value, not something main.py's own defensive
+# coercion in _build_entry happened to already cover for the /branches
+# read path). Kept as a full column list rather than hardcoding just that
+# one case, since readme.md documents someone can substitute their own
+# DiscoElysium.db here, and this same class of issue could show up
+# elsewhere in a different source file.
+_NUMERIC_COLUMNS = {
+    "dialogues": ["id", "actor", "conversant"],
+    "actors": ["id", "talkativeness"],
+    "dentries": [
+        "id", "actor", "conversant", "conversationid", "difficultypass",
+        "isgroup", "hascheck", "hasalts",
+    ],
+    "dlinks": [
+        "originconversationid", "origindialogueid",
+        "destinationconversationid", "destinationdialogueid",
+        "isConnector", "priority",
+    ],
+    "checks": ["conversationid", "dialogueid", "isred", "difficulty", "forced"],
+    "modifiers": ["conversationid", "dialogueid", "modifier"],
+    "alternates": ["conversationid", "dialogueid"],
+    "variables": ["id"],
+}
+
+
+def _normalize_numeric_columns(conn: sqlite3.Connection) -> None:
+    """Coerces any row where a numeric/boolean-declared column holds a
+    non-numeric value (confirmed real, see _NUMERIC_COLUMNS's comment) to
+    0 in the OptimizedDE.db copy - never touches DiscoElysium.db itself,
+    so /database/download still hands out the exact untouched source
+    file. NULL is left alone (a real, expected absence, not a type
+    mismatch); only text/blob values in a numeric column get coerced."""
+    for table, cols in _NUMERIC_COLUMNS.items():
+        for col in cols:
+            cur = conn.execute(
+                f"UPDATE {table} SET {col} = 0 "
+                f"WHERE {col} IS NOT NULL AND typeof({col}) NOT IN ('integer', 'real')"
+            )
+            if cur.rowcount:
+                print(f"  normalized {cur.rowcount} bad-type row(s) in {table}.{col}", flush=True)
+
+
+# The exact same inert Chat Mapper authoring-tool boilerplate comment
+# shows up verbatim on five columns across three tables - always this
+# exact literal text, never anything real between the brackets. Confirmed
+# counts: dentries.title (390 rows), dentries.conditionstring (234),
+# dentries.userscript (10,659), modifiers.variable (11), alternates.
+# condition (10). Previously stripped at request time in _build_entry (one
+# helper, five call sites) - moved here instead so the data reaching the
+# API is just already clean, the same reasoning as _normalize_numeric_
+# columns. RTRIM (not TRIM) matches the removed helper's old .rstrip()
+# exactly - the boilerplate is always a trailing suffix, so only trailing
+# whitespace needs cleaning up after removing it. NULLIF turns a
+# now-fully-empty string back into a real NULL, same as the old helper's
+# "or None" - a handful of these columns are otherwise-empty entries whose
+# entire content WAS the boilerplate.
+_BOILERPLATE_COLUMNS = [
+    ("dentries", "title"),
+    ("dentries", "conditionstring"),
+    ("dentries", "userscript"),
+    ("modifiers", "variable"),
+    ("alternates", "condition"),
+]
+_BOILERPLATE_TEXT = "--[[ Variable[ ]]"
+
+
+def _clean_boilerplate_text(conn: sqlite3.Connection) -> None:
+    for table, col in _BOILERPLATE_COLUMNS:
+        cur = conn.execute(
+            f"UPDATE {table} SET {col} = NULLIF(RTRIM(REPLACE({col}, ?, '')), '') "
+            f"WHERE {col} LIKE '%' || ? || '%'",
+            (_BOILERPLATE_TEXT, _BOILERPLATE_TEXT),
+        )
+        if cur.rowcount:
+            print(f"  stripped boilerplate from {cur.rowcount} row(s) in {table}.{col}", flush=True)
+
+
+# Branch 1428 ("Stage directions test dialogue") is a leftover developer
+# reference table, not real game content - one check per raw difficulty
+# tier index (0-14), purely so a writer could look up what DC each tier
+# maps to (see the DIFFICULTY_TIERS comment above, which is how that
+# mapping was originally confirmed). Verified unreachable from anywhere
+# else in the graph: zero dlinks rows have destinationconversationid=1428
+# with a different originconversationid - every link touching it is
+# internal to itself. Its 15 checks are real, correctly-typed rows though -
+# unlike the boilerplate/type-mismatch cases above, this isn't malformed
+# data, it's a curation call about what belongs in the cross-branch checks
+# browser specifically. Excluding it via a view (checks_curated) rather
+# than deleting the rows means /branches/1428 itself still shows its own
+# check badges correctly when viewed directly - only the aggregate browser
+# (/search/checks, /checks/meta) needs to not treat it as a real in-game
+# check.
+_TEST_ONLY_BRANCH_IDS = {1428}
+
+
+def _create_checks_curated_view(conn: sqlite3.Connection) -> None:
+    ids = ",".join(str(i) for i in _TEST_ONLY_BRANCH_IDS)
+    conn.execute(f"CREATE VIEW checks_curated AS SELECT * FROM checks WHERE conversationid NOT IN ({ids})")
 
 
 def ensure_optimized_db() -> None:
@@ -147,6 +263,9 @@ def ensure_optimized_db() -> None:
     shutil.copyfile(_SOURCE_DB_PATH, _OPTIMIZED_DB_PATH)
     conn = sqlite3.connect(_OPTIMIZED_DB_PATH)
     try:
+        _normalize_numeric_columns(conn)
+        _clean_boilerplate_text(conn)
+        _create_checks_curated_view(conn)
         conn.executescript(
             """
             CREATE VIRTUAL TABLE dentries_fts USING fts5(
@@ -609,21 +728,6 @@ DIFFICULTY_TIERS = {
 SKILL_ACTOR_IDS = set(range(389, 413))
 
 
-# The exact same inert Chat Mapper authoring-tool boilerplate comment shows
-# up on FOUR different raw-script/condition columns, not just userscript -
-# confirmed: 234 dentries.conditionstring rows, 11 modifiers.variable rows,
-# and 10 alternates.condition rows also carry it (on top of the original
-# 10,659 dentries.userscript rows). Always this exact literal text, never
-# anything real between the brackets. One shared helper so it's stripped
-# consistently everywhere this kind of text reaches the API, instead of
-# fixing it field-by-field as each one gets noticed (v1.1.5 only handled
-# userscript; this handles all four in one place).
-def _strip_script_boilerplate(s: str | None) -> str | None:
-    if not s:
-        return s
-    return s.replace("--[[ Variable[ ]]", "").rstrip() or None
-
-
 def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
     """Shared per-dentry classification logic - used by both /branches/{id}
     (bulk, one call per branch) and /branches/{id}/lines/{line_id} (single
@@ -648,53 +752,40 @@ def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
             # sorted positive-first (descending value) so bonuses and
             # penalties group together instead of interleaving in
             # whatever order the source db happened to store them in.
-            # modifiers.modifier is usually a real +/- int, but a handful
-            # of rows (confirmed on branch 1015, "MERC TRIBUNAL" etc.)
-            # carry an empty string instead - they're section-header-style
-            # rows (blank variable too, tooltip-only), not a real numeric
-            # modifier, and crashed this sort outright before. Coerced to
-            # 0 for sorting/sign purposes rather than dropped, since the
-            # tooltip text itself is still real and worth showing.
+            # modifier is guaranteed a real int and variable is already
+            # boilerplate-free by the time it reaches this code - both
+            # fixed upstream in OptimizedDE.db's build step (see
+            # _normalize_numeric_columns / _clean_boilerplate_text), not
+            # defensively here.
             "modifiers": [
                 {
-                    "variable": _strip_script_boilerplate(mod.variable),
-                    "value": mod.modifier if isinstance(mod.modifier, (int, float)) else 0,
+                    "variable": mod.variable,
+                    "value": mod.modifier,
                     "tooltip": mod.tooltip,
                 }
-                for mod in sorted(
-                    modifier_rows,
-                    key=lambda m: -(m.modifier if isinstance(m.modifier, (int, float)) else 0),
-                )
+                for mod in sorted(modifier_rows, key=lambda m: -m.modifier)
             ],
         }
 
     alternates = [
-        {"condition": _strip_script_boilerplate(alt.condition), "text": alt.alternateline}
+        {"condition": alt.condition, "text": alt.alternateline}
         for alt in alternate_rows
     ]
 
     # "0" is dentries' placeholder-for-nothing everywhere else in this
     # schema (dialoguetext, sequence, ...) - conditionstring follows the
     # same convention, so it's treated as "no gate" rather than a literal
-    # condition.
+    # condition. (Leftover Chat Mapper authoring-tool boilerplate that used
+    # to show up here is already stripped upstream in OptimizedDE.db's
+    # build step - see _clean_boilerplate_text.)
     condition = row.conditionstring if row.conditionstring not in (None, "", "0") else None
-    condition = _strip_script_boilerplate(condition)
 
     # userscript is a Chat Mapper Lua snippet run when this line is reached -
     # GainItem(...), SetVariableValue(...), ReputationLowers(...), and so on.
     # Previously queried nowhere and shown nowhere, so a line could grant an
     # item or flip a flag with zero trace of it in the frontend. Shown raw,
-    # same as condition/modifiers - no attempt to translate the Lua, with
-    # one exception: a trailing "--[[ Variable[ ]]" shows up on 10,659
-    # entries, always this exact literal text, never with anything real
-    # between the brackets. It's a Lua block comment (inert at runtime) -
-    # almost certainly leftover authoring-tool boilerplate from whatever
-    # Chat Mapper UI feature the writers used to insert a variable
-    # reference, never actually filled in. Stripped here as pure noise, the
-    # same way "0" is already treated as "no value" above - not a
-    # correction to real data, since it never carried any.
+    # same as condition/modifiers - no attempt to translate the Lua.
     effect = row.userscript if row.userscript not in (None, "", "0") else None
-    effect = _strip_script_boilerplate(effect)
 
     # A skill "speaking" unprompted (Volition chiming in, Shivers narrating
     # the city, ...) is a passive check, not a real dialogue choice - see
@@ -714,17 +805,9 @@ def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
             "difficulty_target": target,
         }
 
-    # dentries.title auto-mirrors conditionstring for system/junction nodes
-    # (390 rows carry the same boilerplate as a result) - not currently
-    # rendered by this frontend (only dialogues.title, a different column,
-    # is), but stripped here too since it's returned raw in the API either
-    # way and the point of the shared helper is not having to notice this
-    # field-by-field.
-    title = _strip_script_boilerplate(row.title)
-
     return {
         "dentry_id": row.id,
-        "title": title,
+        "title": row.title,
         "speaker": row.speaker,
         "text": row.dialoguetext,
         "is_system": is_system,
@@ -961,7 +1044,7 @@ async def api_search_effects(request: Request, effect: str, index: int = 0):
                 "dentry_id": row.id,
                 "speaker": row.speaker,
                 "text": row.dialoguetext if row.dialoguetext not in (None, "", "0") else None,
-                "effect": _strip_script_boilerplate(row.userscript),
+                "effect": row.userscript,
             }
             for row in result.fetchall()
         ]
@@ -975,26 +1058,15 @@ async def api_search_effects(request: Request, effect: str, index: int = 0):
         }
 
 
-# Branch 1428 ("Stage directions test dialogue") is a leftover developer
-# reference table, not real game content - one check per raw difficulty
-# tier index (0-14), purely so a writer could look up what DC each tier
-# maps to (see the DIFFICULTY_TIERS comment above, which is how that
-# mapping was originally confirmed). Verified unreachable from anywhere
-# else in the graph: zero dlinks rows have destinationconversationid=1428
-# with a different originconversationid - every link touching it is
-# internal to itself. Not a real content gap to "fix", and not touched in
-# the source database (nothing here writes to it) - just excluded at the
-# API layer so its 15 synthetic checks don't pollute the checks browser
-# (skewing the skill/difficulty filter lists) or show up as if they were
-# real in-game checks.
-_TEST_ONLY_BRANCH_IDS = {1428}
-
 # Backs the checks-search filter dropdowns - distinct skills and distinct
 # real in-game DC numbers actually present in the checks table, same idea
 # as /characters and /effects (pick from what's really there, not free
 # text). difficulty_target is the real DC (see DIFFICULTY_TIERS above),
 # not the raw 0-14 tier index - that's what "skill level it requires"
-# means to a player, the raw index means nothing to them.
+# means to a player, the raw index means nothing to them. Reads from
+# checks_curated (see _create_checks_curated_view), not checks directly -
+# branch 1428's synthetic reference-table checks are excluded there, not
+# with a per-query filter here.
 _checks_meta_cache: dict | None = None
 
 
@@ -1003,11 +1075,7 @@ async def _get_checks_meta() -> dict:
     if _checks_meta_cache is None:
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                text(
-                    "SELECT DISTINCT skilltype, difficulty FROM checks "
-                    "WHERE skilltype IS NOT NULL AND conversationid NOT IN "
-                    f"({','.join(str(i) for i in _TEST_ONLY_BRANCH_IDS)})"
-                )
+                text("SELECT DISTINCT skilltype, difficulty FROM checks_curated WHERE skilltype IS NOT NULL")
             )
             skills: set[str] = set()
             targets: set[int] = set()
@@ -1056,7 +1124,9 @@ async def api_search_checks(
             return {"results": [], "total": 0, "index": index, "limit": PAGE_SIZE, "has_more": False}
 
     async with AsyncSessionLocal() as session:
-        conditions = [f"c.conversationid NOT IN ({','.join(str(i) for i in _TEST_ONLY_BRANCH_IDS)})"]
+        # checks_curated (see _create_checks_curated_view), not checks
+        # directly - branch 1428's synthetic checks are excluded there.
+        conditions = ["1=1"]
         params: dict = {"index": index, "limit": PAGE_SIZE}
         if type != "all":
             conditions.append("c.isred = :is_red")
@@ -1072,7 +1142,7 @@ async def api_search_checks(
         where_clause = " AND ".join(conditions)
 
         count_result = await session.execute(
-            text(f"SELECT COUNT(*) FROM checks c WHERE {where_clause}"), params
+            text(f"SELECT COUNT(*) FROM checks_curated c WHERE {where_clause}"), params
         )
         total = count_result.scalar_one()
 
@@ -1081,7 +1151,7 @@ async def api_search_checks(
                 f"""
                 SELECT c.conversationid, c.dialogueid, c.isred, c.difficulty, c.skilltype,
                        de.dialoguetext, a.name AS speaker
-                FROM checks c
+                FROM checks_curated c
                 LEFT JOIN dentries de ON de.conversationid = c.conversationid AND de.id = c.dialogueid
                 LEFT JOIN actors a ON a.id = de.actor
                 WHERE {where_clause}
@@ -1236,10 +1306,11 @@ async def receive_telemetry(request: Request):
 @app.get("/database/download")
 @limiter.limit(RATE_LIMIT_DOWNLOAD)
 async def download_database(request: Request):
-    """Direct download of the working DiscoElysium.db - the same file this
-    app reads from, read-only, nothing generated on the fly. Deliberately
-    much stricter than every other endpoint here (2/week vs 20/minute) -
-    it's a ~23MB file, not a cheap query."""
+    """Direct download of the original DiscoElysium.db - the exact source
+    file, untouched, not the OptimizedDE.db copy every other endpoint
+    actually reads from (see DATABASE_URL's comment) - nothing generated
+    on the fly. Deliberately much stricter than every other endpoint here
+    (2/week vs 20/minute) - it's a ~23MB file, not a cheap query."""
     return FileResponse(
         "mountpoint/DiscoElysium.db",
         media_type="application/x-sqlite3",

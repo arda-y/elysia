@@ -379,6 +379,10 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "1.2.2", changes: [
+    "Protected the original database file - it's now only ever read directly for downloading, never modified, and any data cleanup happens on a separate working copy instead",
+    "Fixed a couple of small data issues on that working copy: leftover authoring-tool text in a few fields, and a handful of check bonuses/penalties on two branches that weren't being read correctly",
+  ]},
   { version: "1.2.1", changes: [
     "Fixed long script/condition text (e.g. a SetVariableValue(...) call) overflowing its box in the branch explorer and line viewer instead of wrapping",
     "Fixed some branches opening to a blank page instead of their real content - a handful had a starting point disconnected from where the actual scene lives, so the site now finds and opens the real starting point instead (affected 30 branches)",
