@@ -45,6 +45,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import time
 
 import httpx
 import yaml
@@ -255,6 +256,20 @@ print(f"Trusted proxy hosts: {_trusted_hosts}", flush=True)
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=_trusted_hosts)
 
 
+@app.middleware("http")
+async def add_timing_header(request: Request, call_next):
+    """Adds X-Query-Time-Ms to every response - added once here rather than
+    timing each endpoint individually, so it can never drift out of sync as
+    endpoints are added/changed. The frontend reads this header and shows it
+    next to results on every page, so what's displayed is the real backend
+    processing time for that specific request, not a client-side estimate
+    that would also include network latency."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-Query-Time-Ms"] = f"{(time.perf_counter() - start) * 1000:.1f}"
+    return response
+
+
 @app.get("/")
 @limiter.limit(RATE_LIMIT_DEFAULT)
 async def root(request: Request):
@@ -304,7 +319,7 @@ PAGE_SIZE = 100  # fixed page size for every paginated (search) endpoint
 MAX_SEARCH_TERMS = 10  # matches fayde's own "up to 10 words/part words" limit
 
 
-def build_fts_query(raw: str) -> str | None:
+def build_fts_query(raw: str) -> tuple[str | None, list[str]]:
     """Turns free-typed search text into an FTS5 query: "..."-quoted
     segments become literal phrases, remaining whitespace-separated words
     each become their own term, and every term is required (AND) rather
@@ -320,14 +335,36 @@ def build_fts_query(raw: str) -> str | None:
     query syntax (AND/OR/NOT/-/*) into the search box behave as literal
     text instead of being parsed as query operators, since a quoted
     phrase's contents are never re-interpreted as syntax.
+
+    Terms under 3 characters can't go through MATCH at all: the trigram
+    tokenizer (see its setup comment) can't form a single trigram out of
+    fewer than 3 characters, so a bare 1-2 letter word (very common - "he",
+    "to", "a", "is", ...) can *never* match anything via MATCH regardless
+    of what the actual text contains. Since every term is AND'd, leaving
+    one of these in the MATCH query silently zeroed out the whole thing -
+    confirmed: "he needs to kill himself" returned 0 results even though
+    that exact sentence exists verbatim in the db, because "he" and "to"
+    alone are unmatchable there. Returned separately instead, so the
+    caller can still require them via a plain LIKE - cheap since it only
+    runs against whatever MATCH already narrowed down, and means a typed
+    word actually constrains the results instead of being silently
+    dropped from the query without telling the user.
+
+    Returns (fts_query_or_None, short_terms) - fts_query is None only when
+    there are no terms of either kind, or every term present is short (the
+    caller then has to fall back to a plain table scan for those).
     """
     phrases = re.findall(r'"([^"]*)"', raw)
     remainder = re.sub(r'"[^"]*"', " ", raw)
     words = remainder.split()
-    terms = [t.strip() for t in (phrases + words) if t.strip()][:MAX_SEARCH_TERMS]
-    if not terms:
-        return None
-    return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
+    all_terms = [t.strip() for t in (phrases + words) if t.strip()][:MAX_SEARCH_TERMS]
+    long_terms = [t for t in all_terms if len(t) >= 3]
+    short_terms = [t for t in all_terms if len(t) < 3]
+    fts_query = (
+        " AND ".join('"' + t.replace('"', '""') + '"' for t in long_terms)
+        if long_terms else None
+    )
+    return fts_query, short_terms
 
 
 @app.get("/search/lines")
@@ -338,8 +375,8 @@ async def api_search_lines(
     character: str | None = None,
     index: int = 0,
 ):
-    fts_query = build_fts_query(q) if q else None
-    if not fts_query and not character:
+    fts_query, short_terms = build_fts_query(q) if q else (None, [])
+    if not fts_query and not short_terms and not character:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="provide at least one of q or character",
@@ -362,6 +399,13 @@ async def api_search_lines(
             params["q"] = fts_query
         else:
             from_clause = "dentries de"
+        # Short (<3 char) terms can't go through MATCH - see build_fts_query.
+        # Required here via a plain LIKE instead, which only has to scan
+        # whatever MATCH already narrowed down to (or the whole table, in
+        # the rare case every term was short and there's no MATCH at all).
+        for i, term in enumerate(short_terms):
+            conditions.append(f"de.dialoguetext LIKE :short{i} ESCAPE '\\'")
+            params[f"short{i}"] = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         if actor_id is not None:
             conditions.append("de.actor = :actor_id")
             params["actor_id"] = actor_id
@@ -403,33 +447,37 @@ async def api_search_lines(
 @app.get("/search/branches")
 @limiter.limit(RATE_LIMIT_DEFAULT)
 async def api_search_branches(request: Request, title: str, index: int = 0):
-    fts_query = build_fts_query(title) if title.strip() else None
-    if not fts_query:
+    fts_query, short_terms = build_fts_query(title) if title.strip() else (None, [])
+    if not fts_query and not short_terms:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="title must not be empty")
     index = max(0, index)
 
     async with AsyncSearchSessionLocal() as session:
-        params = {"title": fts_query, "index": index, "limit": PAGE_SIZE}
+        conditions = []
+        params: dict = {"index": index, "limit": PAGE_SIZE}
+        if fts_query:
+            from_clause = "dialogues_fts f JOIN dialogues dl ON dl.rowid = f.rowid"
+            conditions.append("f.title MATCH :title")
+            params["title"] = fts_query
+        else:
+            from_clause = "dialogues dl"
+        # Short (<3 char) terms can't go through MATCH - see build_fts_query.
+        for i, term in enumerate(short_terms):
+            conditions.append(f"dl.title LIKE :short{i} ESCAPE '\\'")
+            params[f"short{i}"] = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where_clause = " AND ".join(conditions)
 
         count_result = await session.execute(
-            text(
-                """
-                SELECT COUNT(*) FROM dialogues_fts f
-                JOIN dialogues dl ON dl.rowid = f.rowid
-                WHERE f.title MATCH :title
-                """
-            ),
-            params,
+            text(f"SELECT COUNT(*) FROM {from_clause} WHERE {where_clause}"), params
         )
         total = count_result.scalar_one()
 
         result = await session.execute(
             text(
-                """
+                f"""
                 SELECT dl.id, dl.title, dl.description
-                FROM dialogues_fts f
-                JOIN dialogues dl ON dl.rowid = f.rowid
-                WHERE f.title MATCH :title
+                FROM {from_clause}
+                WHERE {where_clause}
                 ORDER BY dl.title
                 LIMIT :limit OFFSET :index
                 """
@@ -472,12 +520,33 @@ async def _get_orb_branches() -> list[dict]:
     if _orb_branches_cache is None:
         async with AsyncSessionLocal() as session:
             result = await session.execute(text("SELECT id, title, description FROM dialogues WHERE title IS NOT NULL"))
-            _orb_branches_cache = [
+            orbs = [
                 {"branch_id": row.id, "title": row.title, "description": row.description}
                 for row in result.fetchall()
                 if _ORB_WORD_RE.search(row.title)
             ]
-            _orb_branches_cache.sort(key=lambda b: b["title"])
+            orbs.sort(key=lambda b: b["title"])
+
+            # has_content: whether this branch has any real (non-system)
+            # dentry - checked: 671 of 781 ORB branches don't, their entire
+            # content is the description above. The frontend uses this to
+            # skip offering a branch explorer that has nothing to show.
+            orb_ids = [o["branch_id"] for o in orbs]
+            has_content_ids: set[int] = set()
+            if orb_ids:
+                rows = await session.execute(
+                    text(
+                        f"SELECT DISTINCT conversationid FROM dentries "
+                        f"WHERE conversationid IN ({','.join(str(i) for i in orb_ids)}) "
+                        f"AND isgroup = 0 "
+                        f"AND NOT (actor = 0 AND (dialoguetext IS NULL OR dialoguetext IN ('', '0')))"
+                    )
+                )
+                has_content_ids = {row.conversationid for row in rows.fetchall()}
+            for o in orbs:
+                o["has_content"] = o["branch_id"] in has_content_ids
+
+            _orb_branches_cache = orbs
     return _orb_branches_cache
 
 
@@ -526,6 +595,34 @@ DIFFICULTY_TIERS = {
     12: ("Very Difficult", 15), 13: ("Heroic", 17), 14: ("Impossible", 19),
 }
 
+# actors 389-412 are the 24 skills themselves acting as speakers (unprompted
+# "passive" commentary - Volition chiming in unbidden, Shivers narrating the
+# city, etc.), confirmed contiguous and complete against the actors table.
+# These lines never carry a checks table row (verified: 0 of 14,130 skill-
+# actor lines have hascheck=1) - hascheck/checks is only for player-facing
+# checks initiated by picking a dialogue option. Instead dentries.difficultypass
+# is set directly on ~68% of them (9,544 of 14,130) with the same 0-14 tier
+# index as checks.difficulty - this is the passive trigger threshold: roughly
+# "your skill needs to clear this DC for the line to fire at all", derived
+# from cross-referencing branch 142's Volition/Half Light/Physical Instrument/
+# Composure lines against DIFFICULTY_TIERS and finding it lines up exactly.
+SKILL_ACTOR_IDS = set(range(389, 413))
+
+
+# The exact same inert Chat Mapper authoring-tool boilerplate comment shows
+# up on FOUR different raw-script/condition columns, not just userscript -
+# confirmed: 234 dentries.conditionstring rows, 11 modifiers.variable rows,
+# and 10 alternates.condition rows also carry it (on top of the original
+# 10,659 dentries.userscript rows). Always this exact literal text, never
+# anything real between the brackets. One shared helper so it's stripped
+# consistently everywhere this kind of text reaches the API, instead of
+# fixing it field-by-field as each one gets noticed (v1.1.5 only handled
+# userscript; this handles all four in one place).
+def _strip_script_boilerplate(s: str | None) -> str | None:
+    if not s:
+        return s
+    return s.replace("--[[ Variable[ ]]", "").rstrip() or None
+
 
 def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
     """Shared per-dentry classification logic - used by both /branches/{id}
@@ -552,28 +649,80 @@ def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
             # penalties group together instead of interleaving in
             # whatever order the source db happened to store them in
             "modifiers": [
-                {"variable": mod.variable, "value": mod.modifier, "tooltip": mod.tooltip}
+                {
+                    "variable": _strip_script_boilerplate(mod.variable),
+                    "value": mod.modifier,
+                    "tooltip": mod.tooltip,
+                }
                 for mod in sorted(modifier_rows, key=lambda m: -m.modifier)
             ],
         }
 
-    alternates = [{"condition": alt.condition, "text": alt.alternateline} for alt in alternate_rows]
+    alternates = [
+        {"condition": _strip_script_boilerplate(alt.condition), "text": alt.alternateline}
+        for alt in alternate_rows
+    ]
 
     # "0" is dentries' placeholder-for-nothing everywhere else in this
     # schema (dialoguetext, sequence, ...) - conditionstring follows the
     # same convention, so it's treated as "no gate" rather than a literal
     # condition.
     condition = row.conditionstring if row.conditionstring not in (None, "", "0") else None
+    condition = _strip_script_boilerplate(condition)
+
+    # userscript is a Chat Mapper Lua snippet run when this line is reached -
+    # GainItem(...), SetVariableValue(...), ReputationLowers(...), and so on.
+    # Previously queried nowhere and shown nowhere, so a line could grant an
+    # item or flip a flag with zero trace of it in the frontend. Shown raw,
+    # same as condition/modifiers - no attempt to translate the Lua, with
+    # one exception: a trailing "--[[ Variable[ ]]" shows up on 10,659
+    # entries, always this exact literal text, never with anything real
+    # between the brackets. It's a Lua block comment (inert at runtime) -
+    # almost certainly leftover authoring-tool boilerplate from whatever
+    # Chat Mapper UI feature the writers used to insert a variable
+    # reference, never actually filled in. Stripped here as pure noise, the
+    # same way "0" is already treated as "no value" above - not a
+    # correction to real data, since it never carried any.
+    effect = row.userscript if row.userscript not in (None, "", "0") else None
+    effect = _strip_script_boilerplate(effect)
+
+    # A skill "speaking" unprompted (Volition chiming in, Shivers narrating
+    # the city, ...) is a passive check, not a real dialogue choice - see
+    # SKILL_ACTOR_IDS. It never has a checks table row (that's only for
+    # player-initiated checks), but dentries.difficultypass carries the same
+    # 0-14 tier index directly on the line, most of the time (9,544 of
+    # 14,130 skill-actor lines) - the threshold the skill needs to clear to
+    # trigger at all. Same DIFFICULTY_TIERS conversion as a real check,
+    # different field to keep it visibly distinct from a player-facing one.
+    passive_check = None
+    if row.actor in SKILL_ACTOR_IDS and row.difficultypass:
+        tier_name, target = DIFFICULTY_TIERS.get(row.difficultypass, (None, None))
+        passive_check = {
+            "skill": row.speaker,
+            "difficulty_tier": row.difficultypass,
+            "difficulty_name": tier_name,
+            "difficulty_target": target,
+        }
+
+    # dentries.title auto-mirrors conditionstring for system/junction nodes
+    # (390 rows carry the same boilerplate as a result) - not currently
+    # rendered by this frontend (only dialogues.title, a different column,
+    # is), but stripped here too since it's returned raw in the API either
+    # way and the point of the shared helper is not having to notice this
+    # field-by-field.
+    title = _strip_script_boilerplate(row.title)
 
     return {
         "dentry_id": row.id,
-        "title": row.title,
+        "title": title,
         "speaker": row.speaker,
         "text": row.dialoguetext,
         "is_system": is_system,
         "is_player_choice": row.actor == 387,  # "You" - see actors table
         "condition": condition,
+        "effect": effect,
         "check": check,
+        "passive_check": passive_check,
         "alternates": alternates,
     }
 
@@ -592,7 +741,7 @@ async def _fetch_branch(conversation_id: int):
             text(
                 """
                 SELECT de.id, de.title, de.dialoguetext, de.actor, a.name AS speaker,
-                       de.isgroup, de.hascheck, de.hasalts, de.conditionstring
+                       de.isgroup, de.hascheck, de.hasalts, de.conditionstring, de.userscript, de.difficultypass
                 FROM dentries de
                 LEFT JOIN actors a ON a.id = de.actor
                 WHERE de.conversationid = :cid
@@ -668,6 +817,242 @@ async def _fetch_branch(conversation_id: int):
         }
 
 
+# The Lua "effect" snippet (dentries.userscript) is one or more function
+# calls chained with ";" - GainItem("bullet"), DamageVolition(1),
+# SetVariableValue(...), and so on. "Every instance of every effect" means
+# every distinct function name used across the whole dataset, the same way
+# /characters lists every distinct actor - a free-text box isn't the right
+# input for something with a small, fixed, known vocabulary. "once(" and
+# "not(" are excluded: they're generic Lua helpers wrapping a value/
+# expression (e.g. "+ once(1)", "not(Variable[...])"), not a game effect in
+# their own right - everything else found is a real effect call.
+_EFFECT_CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_EFFECT_DENYLIST = {"once", "not"}
+_effects_cache: list[dict] | None = None
+
+
+async def _get_effects() -> list[dict]:
+    global _effects_cache
+    if _effects_cache is None:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                text("SELECT userscript FROM dentries WHERE userscript IS NOT NULL AND userscript != '' AND userscript != '0'")
+            )
+            counts: dict[str, int] = {}
+            for row in result.fetchall():
+                for name in set(_EFFECT_CALL_RE.findall(row.userscript)):
+                    if name in _EFFECT_DENYLIST:
+                        continue
+                    counts[name] = counts.get(name, 0) + 1
+            _effects_cache = [{"name": n, "count": c} for n, c in sorted(counts.items())]
+    return _effects_cache
+
+
+@app.get("/effects")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_effects(request: Request):
+    """Backs the "pick an effect from a list" dropdown, same idea as
+    /characters - every distinct effect function name used in
+    dentries.userscript, with how many lines call it."""
+    return await _get_effects()
+
+
+@app.get("/search/effects")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_search_effects(request: Request, effect: str, index: int = 0):
+    """Every line whose userscript calls the given effect function
+    (exact name, from the /effects list - not a free-text substring)."""
+    effect = effect.strip()
+    if not effect:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="effect must not be empty")
+    index = max(0, index)
+
+    async with AsyncSessionLocal() as session:
+        # Match "<name>(" specifically, not just the name anywhere, so
+        # e.g. "GainItem" doesn't also match some other call that merely
+        # mentions it as a string argument.
+        like = "%" + effect.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "(%"
+        conditions = "de.userscript IS NOT NULL AND de.userscript != '' AND de.userscript LIKE :effect ESCAPE '\\'"
+        params = {"effect": like, "index": index, "limit": PAGE_SIZE}
+
+        count_result = await session.execute(
+            text(f"SELECT COUNT(*) FROM dentries de WHERE {conditions}"), params
+        )
+        total = count_result.scalar_one()
+
+        result = await session.execute(
+            text(
+                f"""
+                SELECT de.conversationid, de.id, de.dialoguetext, de.userscript, a.name AS speaker
+                FROM dentries de
+                LEFT JOIN actors a ON a.id = de.actor
+                WHERE {conditions}
+                ORDER BY de.conversationid, de.id
+                LIMIT :limit OFFSET :index
+                """
+            ),
+            params,
+        )
+        results = [
+            {
+                "branch_id": row.conversationid,
+                "dentry_id": row.id,
+                "speaker": row.speaker,
+                "text": row.dialoguetext if row.dialoguetext not in (None, "", "0") else None,
+                "effect": _strip_script_boilerplate(row.userscript),
+            }
+            for row in result.fetchall()
+        ]
+
+        return {
+            "results": results,
+            "total": total,
+            "index": index,
+            "limit": PAGE_SIZE,
+            "has_more": index + len(results) < total,
+        }
+
+
+# Branch 1428 ("Stage directions test dialogue") is a leftover developer
+# reference table, not real game content - one check per raw difficulty
+# tier index (0-14), purely so a writer could look up what DC each tier
+# maps to (see the DIFFICULTY_TIERS comment above, which is how that
+# mapping was originally confirmed). Verified unreachable from anywhere
+# else in the graph: zero dlinks rows have destinationconversationid=1428
+# with a different originconversationid - every link touching it is
+# internal to itself. Not a real content gap to "fix", and not touched in
+# the source database (nothing here writes to it) - just excluded at the
+# API layer so its 15 synthetic checks don't pollute the checks browser
+# (skewing the skill/difficulty filter lists) or show up as if they were
+# real in-game checks.
+_TEST_ONLY_BRANCH_IDS = {1428}
+
+# Backs the checks-search filter dropdowns - distinct skills and distinct
+# real in-game DC numbers actually present in the checks table, same idea
+# as /characters and /effects (pick from what's really there, not free
+# text). difficulty_target is the real DC (see DIFFICULTY_TIERS above),
+# not the raw 0-14 tier index - that's what "skill level it requires"
+# means to a player, the raw index means nothing to them.
+_checks_meta_cache: dict | None = None
+
+
+async def _get_checks_meta() -> dict:
+    global _checks_meta_cache
+    if _checks_meta_cache is None:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                text(
+                    "SELECT DISTINCT skilltype, difficulty FROM checks "
+                    "WHERE skilltype IS NOT NULL AND conversationid NOT IN "
+                    f"({','.join(str(i) for i in _TEST_ONLY_BRANCH_IDS)})"
+                )
+            )
+            skills: set[str] = set()
+            targets: set[int] = set()
+            for row in result.fetchall():
+                skills.add(row.skilltype)
+                _, target = DIFFICULTY_TIERS.get(row.difficulty, (None, None))
+                if target is not None:
+                    targets.add(target)
+            _checks_meta_cache = {
+                "skills": sorted(skills),
+                "difficulty_targets": sorted(targets),
+            }
+    return _checks_meta_cache
+
+
+@app.get("/checks/meta")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_checks_meta(request: Request):
+    return await _get_checks_meta()
+
+
+@app.get("/search/checks")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_search_checks(
+    request: Request,
+    type: str = "all",
+    skill: str | None = None,
+    difficulty_target: int | None = None,
+    index: int = 0,
+):
+    """Browse every skill check (the checks table, 235 rows total),
+    filterable by RED/WHITE, skill, and the required skill level (the real
+    DC, not the raw tier index) - with enough of the owning line's context
+    (speaker, text preview) to be useful without opening the branch first."""
+    type = type.lower()
+    if type not in ("all", "red", "white"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type must be one of: all, red, white")
+    index = max(0, index)
+
+    # difficulty_target -> the set of raw tier indices that map to it (see
+    # DIFFICULTY_TIERS - two indices can share the same real DC).
+    target_tiers = None
+    if difficulty_target is not None:
+        target_tiers = [tier for tier, (_, target) in DIFFICULTY_TIERS.items() if target == difficulty_target]
+        if not target_tiers:
+            return {"results": [], "total": 0, "index": index, "limit": PAGE_SIZE, "has_more": False}
+
+    async with AsyncSessionLocal() as session:
+        conditions = [f"c.conversationid NOT IN ({','.join(str(i) for i in _TEST_ONLY_BRANCH_IDS)})"]
+        params: dict = {"index": index, "limit": PAGE_SIZE}
+        if type != "all":
+            conditions.append("c.isred = :is_red")
+            params["is_red"] = 1 if type == "red" else 0
+        if skill:
+            conditions.append("c.skilltype = :skill")
+            params["skill"] = skill
+        if target_tiers is not None:
+            placeholders = ", ".join(f":tier{i}" for i in range(len(target_tiers)))
+            conditions.append(f"c.difficulty IN ({placeholders})")
+            for i, tier in enumerate(target_tiers):
+                params[f"tier{i}"] = tier
+        where_clause = " AND ".join(conditions)
+
+        count_result = await session.execute(
+            text(f"SELECT COUNT(*) FROM checks c WHERE {where_clause}"), params
+        )
+        total = count_result.scalar_one()
+
+        result = await session.execute(
+            text(
+                f"""
+                SELECT c.conversationid, c.dialogueid, c.isred, c.difficulty, c.skilltype,
+                       de.dialoguetext, a.name AS speaker
+                FROM checks c
+                LEFT JOIN dentries de ON de.conversationid = c.conversationid AND de.id = c.dialogueid
+                LEFT JOIN actors a ON a.id = de.actor
+                WHERE {where_clause}
+                ORDER BY c.conversationid, c.dialogueid
+                LIMIT :limit OFFSET :index
+                """
+            ),
+            params,
+        )
+        results = []
+        for row in result.fetchall():
+            tier_name, target = DIFFICULTY_TIERS.get(row.difficulty, (None, None))
+            results.append({
+                "branch_id": row.conversationid,
+                "dentry_id": row.dialogueid,
+                "speaker": row.speaker,
+                "text": row.dialoguetext if row.dialoguetext not in (None, "", "0") else None,
+                "skill": row.skilltype,
+                "is_red": bool(row.isred),
+                "difficulty_tier": row.difficulty,
+                "difficulty_name": tier_name,
+                "difficulty_target": target,
+            })
+
+        return {
+            "results": results,
+            "total": total,
+            "index": index,
+            "limit": PAGE_SIZE,
+            "has_more": index + len(results) < total,
+        }
+
+
 @app.get("/branches/{conversation_id}")
 @limiter.limit(RATE_LIMIT_DEFAULT)
 async def api_get_branch(request: Request, conversation_id: int):
@@ -693,7 +1078,7 @@ async def api_get_line(request: Request, conversation_id: int, line_id: int):
             text(
                 """
                 SELECT de.id, de.title, de.dialoguetext, de.actor, a.name AS speaker,
-                       de.isgroup, de.hascheck, de.hasalts, de.conditionstring
+                       de.isgroup, de.hascheck, de.hasalts, de.conditionstring, de.userscript, de.difficultypass
                 FROM dentries de
                 LEFT JOIN actors a ON a.id = de.actor
                 WHERE de.conversationid = :cid AND de.id = :lid

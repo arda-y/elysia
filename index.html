@@ -38,24 +38,41 @@
   .landing-contact { display: flex; justify-content: center; align-items: center; gap: 0.8rem; font-size: 0.85rem; }
   .landing-contact .sep { color: #ccc; }
 
-  #explorer { border: 1px solid #ccc; padding: 1rem; margin-top: 0.5rem; }
-  #explorer .node { margin-bottom: 1rem; }
-  #explorer .speaker { font-weight: bold; }
-  #explorer .you .speaker { color: #1a5fb4; }
-  #explorer .check { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem; margin: 0.3rem 0; border-radius: 3px; }
-  #explorer .check.white { background: #eee; border: 1px solid #999; }
-  #explorer .check.red { background: #fdd; border: 1px solid #c33; color: #900; }
-  #explorer .text { margin-top: 0.3rem; white-space: pre-wrap; }
-  #explorer .alts { font-size: 0.8rem; color: #555; margin-top: 0.4rem; }
-  #explorer .condition {
+  #branchDescription { font-style: italic; color: #666; margin-top: 0.5rem; }
+  #explorer, #line-detail { border: 1px solid #ccc; padding: 1rem; margin-top: 0.5rem; }
+  #explorer .node, #line-detail .node { margin-bottom: 1rem; }
+  #explorer .speaker, #line-detail .speaker { font-weight: bold; }
+  #explorer .you .speaker, #line-detail .you .speaker { color: #1a5fb4; }
+  #explorer .check, #line-detail .check, #search-results .check { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem; margin: 0.3rem 0; border-radius: 3px; }
+  #explorer .check.white, #line-detail .check.white, #search-results .check.white { background: #eee; border: 1px solid #999; }
+  #explorer .check.red, #line-detail .check.red, #search-results .check.red { background: #fdd; border: 1px solid #c33; color: #900; }
+  .check-result { border-radius: 8px; margin-bottom: 0.6rem; padding: 0.6rem 0.8rem; border-bottom: none; }
+  .check-result.white { background: #fff; border: 1px solid #ccc; }
+  .check-result.red { background: #fff5f5; border: 1px solid #e3a3a3; }
+  .check-result .check-skill { font-weight: bold; font-size: 1.05rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.5rem; }
+  .check-result .check-req { font-weight: normal; font-size: 0.75rem; color: #777; }
+  .check-result.red .check-req { color: #a33; }
+  #explorer .passive-check, #line-detail .passive-check {
+    display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem; margin: 0.3rem 0;
+    border-radius: 3px; background: #eef; border: 1px solid #99c;
+  }
+  #explorer .text, #line-detail .text { margin-top: 0.3rem; white-space: pre-wrap; }
+  #explorer .alts, #line-detail .alts { font-size: 0.8rem; color: #555; margin-top: 0.4rem; }
+  #explorer .condition, #line-detail .condition {
     font-size: 0.75rem; color: #555; margin-top: 0.3rem;
     border-left: 3px solid #999; padding-left: 0.5rem;
   }
-  #explorer .condition code { color: #333; }
-  #explorer .modifiers { font-size: 0.75rem; margin-top: 0.2rem; }
-  #explorer .modifiers li { list-style: none; }
-  #explorer .mod-pos { color: #1a6b2e; font-weight: bold; }
-  #explorer .mod-neg { color: #a31212; font-weight: bold; }
+  #explorer .condition code, #line-detail .condition code { color: #333; }
+  #explorer .effect, #line-detail .effect {
+    font-size: 0.75rem; color: #555; margin-top: 0.2rem;
+    border-left: 3px solid #b58a2e; padding-left: 0.5rem;
+  }
+  #explorer .effect code, #line-detail .effect code { color: #333; }
+  #explorer .modifiers, #line-detail .modifiers { font-size: 0.75rem; margin-top: 0.2rem; }
+  #explorer .modifiers li, #line-detail .modifiers li { list-style: none; }
+  #explorer .mod-pos, #line-detail .mod-pos { color: #1a6b2e; font-weight: bold; }
+  #explorer .mod-neg, #line-detail .mod-neg { color: #a31212; font-weight: bold; }
+  #explorer .mod-detail, #line-detail .mod-detail { font-size: 0.9em; opacity: 0.7; }
   #explorer .options button {
     display: flex; flex-direction: column; align-items: stretch;
     width: 100%; text-align: left; margin: 0.2rem 0; padding: 0.4rem;
@@ -99,25 +116,33 @@
       <button data-mode="line" onclick="setMode('line')">an exact line (branch/id)</button>
       <button data-mode="branch" onclick="setMode('branch')">an exact branch (id)</button>
       <button data-mode="orbs" onclick="setMode('orbs')">browse ORBs</button>
+      <button data-mode="effects" onclick="setMode('effects')">an effect</button>
+      <button data-mode="checks" onclick="setMode('checks')">checks</button>
     </div>
     <div id="mode-form" style="margin-top: 0.6rem;"></div>
   </div>
 
   <!-- Shared results list for both search modes -->
   <div id="view-search" style="display:none;">
-    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; new search</a>
+    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; return to main page</a>
     <div id="search-results"></div>
   </div>
 
   <!-- A single line's full detail - the "line page" -->
   <div id="view-line" style="display:none;">
-    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; new search</a>
+    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; return to main page</a>
     <div id="line-detail"></div>
+  </div>
+
+  <!-- Changelog - static data below, listed per version -->
+  <div id="view-updates" style="display:none;">
+    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; return to main page</a>
+    <div id="updates-list"></div>
   </div>
 
   <!-- The interactive branch explorer -->
   <div id="view-branch" style="display:none;">
-    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; new search</a>
+    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; return to main page</a>
     <div class="toolbar">
       <input type="text" id="branchJumpInput" placeholder="jump to branch id, or branch/line e.g. 182/23">
       <button onclick="submitBranchJump()">go</button>
@@ -128,6 +153,7 @@
       <button onclick="copyToClipboard(branchAddressUrl(rootBranchId), this)">copy branch address</button>
       <span class="meta" id="explorerTitle"></span>
     </div>
+    <div id="branchDescription" style="display:none;"></div>
     <div id="explorer"></div>
   </div>
 
@@ -138,6 +164,15 @@ function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str ?? "";
   return div.innerHTML;
+}
+
+// Every response carries X-Query-Time-Ms (see main.py's add_timing_header
+// middleware) - the real backend processing time, not a client-side
+// estimate that would also fold in network latency. Rendered as a small
+// meta line wherever a fetched result is shown.
+function queryTimeHtml(res) {
+  const ms = res.headers.get("X-Query-Time-Ms");
+  return ms != null ? `<div class="meta">query took ${escapeHtml(ms)}ms</div>` : "";
 }
 
 async function copyToClipboard(text, btn) {
@@ -159,6 +194,9 @@ function lineAddressUrl(branchId, dentryId) {
 }
 function branchAddressUrl(branchId) {
   return `${location.origin}${location.pathname}?view=branch&branch=${branchId}`;
+}
+function orbAddressUrl(branchId) {
+  return `${location.origin}${location.pathname}?view=orb&branch=${branchId}`;
 }
 
 // All 24 skills, grouped by their attribute - not in the source db anywhere
@@ -211,6 +249,46 @@ async function populateCharacterSelect(selectEl) {
   }
 }
 
+let cachedEffects = null;
+async function getEffects() {
+  if (cachedEffects) return cachedEffects;
+  const res = await fetch("effects");
+  cachedEffects = await res.json();
+  return cachedEffects;
+}
+async function populateEffectSelect(selectEl) {
+  const effects = await getEffects();
+  for (const e of effects) {
+    const opt = document.createElement("option");
+    opt.value = e.name;
+    opt.textContent = `${e.name} (${e.count})`;
+    selectEl.appendChild(opt);
+  }
+}
+
+let cachedChecksMeta = null;
+async function getChecksMeta() {
+  if (cachedChecksMeta) return cachedChecksMeta;
+  const res = await fetch("checks/meta");
+  cachedChecksMeta = await res.json();
+  return cachedChecksMeta;
+}
+async function populateCheckFilters(skillSelectEl, difficultySelectEl) {
+  const meta = await getChecksMeta();
+  for (const s of meta.skills) {
+    const opt = document.createElement("option");
+    opt.value = s;
+    opt.textContent = s;
+    skillSelectEl.appendChild(opt);
+  }
+  for (const d of meta.difficulty_targets) {
+    const opt = document.createElement("option");
+    opt.value = d;
+    opt.textContent = d;
+    difficultySelectEl.appendChild(opt);
+  }
+}
+
 // --- router ------------------------------------------------------------
 // Real query-string state (?view=...&...), so a URL from the address bar
 // or a "copy address" button is an actual, reloadable/shareable link, not
@@ -248,7 +326,11 @@ const VIEW_CONTAINERS = {
   "search-lines": "view-search",
   "search-branches": "view-search",
   "search-orbs": "view-search",
+  "search-effects": "view-search",
+  "search-checks": "view-search",
   line: "view-line",
+  orb: "view-line",
+  updates: "view-updates",
   branch: "view-branch",
 };
 
@@ -266,7 +348,11 @@ function render(params) {
   if (view === "search-lines") runSearchLines(params.q, params.character, Number(params.index || 0));
   else if (view === "search-branches") runSearchBranches(params.title, Number(params.index || 0));
   else if (view === "search-orbs") runSearchOrbs(params.q, Number(params.index || 0));
+  else if (view === "search-effects") runSearchEffects(params.effect, Number(params.index || 0));
+  else if (view === "search-checks") runSearchChecks(params.type, params.skill, params.difficulty_target, Number(params.index || 0));
   else if (view === "line") runLineDetail(params.branch, params.id);
+  else if (view === "orb") runOrbDetail(params.branch);
+  else if (view === "updates") renderUpdates();
   else if (view === "branch") runBranchExplorer(params.branch, params.at);
   else renderHome();
 }
@@ -277,6 +363,53 @@ let currentMode = null;  // nothing pre-selected - see the two landing buttons b
 
 const GITHUB_ICON = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>`;
 const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+
+// Static, hand-maintained - kept in sync with each release's actual commit
+// message (see git-commit-and-remote-rules.md's standard release format),
+// newest first. No backend involved; this is genuinely just a changelog.
+const CHANGELOG = [
+  { version: "1.2.0", changes: [
+    "Surfaced passive skill checks (e.g. Volition/Shivers speaking unprompted) with the skill level they require to trigger",
+    "Removed the difficulty tier name (Trivial/Easy/.../Impossible) from check displays - kept the DC number only",
+    "Added this updates/changelog page",
+    "Fixed dresscode/CheckEquipped modifier requirements not displaying in frontend",
+    "Fixed address bar/reload losing the branch-crossing path in the explorer",
+    "Fixed a real data-loss bug: game-state effects (GainItem, SetVariableValue, ...) were queried nowhere and shown nowhere",
+    "Fixed branch descriptions not showing in the branch explorer - most ORB branches rely entirely on this field for content",
+    "ORB search results now skip the dead-end \"open branch\" button for content-less ORBs and offer a standalone view + copyable link instead",
+    "Fixed multi-word search silently returning zero results whenever a common 1-2 letter word (he, to, a, is, ...) was included",
+    "Short search terms are now actually required via a fallback match instead of being silently ignored",
+    "Fixed the line viewer rendering unstyled",
+    "Stripped inert Chat Mapper authoring-tool boilerplate from the effect field, and later from conditions, modifiers, alternate lines, and line titles too - handled consistently everywhere it can appear",
+    "Added real query timing shown on every page that fetches results",
+    "Fixed the update-check notice showing up even when the running version was newer than GitHub's, not just different - was a plain inequality, now a real version comparison",
+    "Container now runs as a non-root user instead of root",
+    "Fixed a passive Encyclopedia check's threshold not showing before picking the option that leads to it, and its gating condition disappearing once chosen",
+    "Added an effect browser - pick any effect (GainItem, DamageVolition, ...) from a dropdown and see every line that triggers it",
+    "Added a checks browser - filter every skill check in the game by RED/WHITE, skill, and required skill level",
+    "Fixed \"back\" looping forever in branches where the dialogue graph genuinely cycles (e.g. the phone booth scene)",
+  ]},
+  { version: "1.1.0", changes: [
+    "Added ORB browsing",
+    "Removed an unnecessary docker volume binding",
+    "Added contact information to the landing page",
+    "Added multi-word and partial (fuzzy) search",
+    "Search performance optimizations",
+  ]},
+  { version: "1.0.0", changes: [
+    "Initial release",
+  ]},
+];
+
+function renderUpdates() {
+  const out = document.getElementById("updates-list");
+  out.innerHTML = CHANGELOG.map(rel => `
+    <div class="result-item">
+      <div><strong>v${escapeHtml(rel.version)}</strong></div>
+      <ul>${rel.changes.map(c => `<li>${escapeHtml(c)}</li>`).join("")}</ul>
+    </div>
+  `).join("");
+}
 
 function setMode(mode) {
   currentMode = mode;
@@ -299,6 +432,7 @@ function renderHome() {
         <div class="landing-contact meta">
           <span>requests and problems - reach out on discord: needbeypazari</span>
         </div>
+        <p class="meta"><a href="#" onclick="navigate({view:'updates'}); return false;">updates / changelog</a></p>
       </div>
     `;
   } else if (currentMode === "lines") {
@@ -348,6 +482,38 @@ function renderHome() {
         so opening one uses the same explorer as everything else.
       </p>
     `;
+  } else if (currentMode === "effects") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <select id="home-effect"><option value="">-- pick an effect --</option></select>
+        <button onclick="submitEffectSearch()">search</button>
+      </div>
+      <p class="meta">
+        every line whose effect (the Lua run when it's reached - item
+        grants, stat/reputation changes, flag sets, and so on) calls the
+        picked function.
+      </p>
+    `;
+    populateEffectSelect(document.getElementById("home-effect"));
+  } else if (currentMode === "checks") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <select id="home-check-type">
+          <option value="all">all checks</option>
+          <option value="white">WHITE checks only</option>
+          <option value="red">RED checks only</option>
+        </select>
+        <select id="home-check-skill"><option value="">-- any skill --</option></select>
+        <select id="home-check-difficulty"><option value="">-- any level --</option></select>
+        <button onclick="submitCheckSearch()">browse</button>
+      </div>
+      <p class="meta">
+        browses every skill check in the game, filterable by type, skill,
+        and the skill level (DC) it requires - WHITE checks can be
+        retried, RED checks are locked in once failed.
+      </p>
+    `;
+    populateCheckFilters(document.getElementById("home-check-skill"), document.getElementById("home-check-difficulty"));
   }
 }
 
@@ -391,6 +557,19 @@ function submitBranchLookup() {
 function submitOrbSearch() {
   const q = document.getElementById("home-orb-q").value.trim();
   navigate({ view: "search-orbs", q });
+}
+
+function submitEffectSearch() {
+  const effect = document.getElementById("home-effect").value;
+  if (!effect) return;
+  navigate({ view: "search-effects", effect });
+}
+
+function submitCheckSearch() {
+  const type = document.getElementById("home-check-type").value;
+  const skill = document.getElementById("home-check-skill").value;
+  const difficulty_target = document.getElementById("home-check-difficulty").value;
+  navigate({ view: "search-checks", type, skill, difficulty_target });
 }
 
 // --- search results --------------------------------------------------------
@@ -439,7 +618,7 @@ async function runSearchLines(q, character, index) {
           </div>
         `).join("")
       : "no results.";
-    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-lines", q, character, index: i }));
+    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-lines", q, character, index: i })) + queryTimeHtml(res);
   } catch (e) {
     out.textContent = "request failed: " + e;
   }
@@ -464,7 +643,7 @@ async function runSearchBranches(title, index) {
           </div>
         `).join("")
       : "no results.";
-    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-branches", title, index: i }));
+    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-branches", title, index: i })) + queryTimeHtml(res);
   } catch (e) {
     out.textContent = "request failed: " + e;
   }
@@ -479,19 +658,100 @@ async function runSearchOrbs(q, index) {
     const res = await fetch("search/orbs?" + usp.toString());
     if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
     const data = await res.json();
+    // Most ORBs (671 of 781, checked) have no real dentries at all - their
+    // entire content is the description field. Sending those into the full
+    // branch explorer just shows "end of visible branch content" with no
+    // explanation, so they get a standalone view instead (same idea as a
+    // line page) plus a direct copyable link, rather than an "open branch"
+    // button leading nowhere.
     const list = data.results.length
       ? data.results.map(b => `
           <div class="result-item">
             <div class="meta">
               [branch ${b.branch_id}]
-              <button class="explore-btn" onclick='navigate({view:"branch", branch:${b.branch_id}})'>open branch &rarr;</button>
+              ${b.has_content
+                ? `<button class="explore-btn" onclick='navigate({view:"branch", branch:${b.branch_id}})'>open branch &rarr;</button>`
+                : `<button class="explore-btn" onclick='navigate({view:"orb", branch:${b.branch_id}})'>view &rarr;</button>`
+                  + `<button class="explore-btn" onclick="copyToClipboard(orbAddressUrl(${b.branch_id}), this)">copy ORB link</button>`
+              }
             </div>
             <div><strong>${escapeHtml(b.title || "(untitled)")}</strong></div>
             ${b.description ? `<div class="meta">${escapeHtml(b.description)}</div>` : ""}
           </div>
         `).join("")
       : "no results.";
-    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-orbs", q, index: i }));
+    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-orbs", q, index: i })) + queryTimeHtml(res);
+  } catch (e) {
+    out.textContent = "request failed: " + e;
+  }
+}
+
+async function runSearchEffects(effect, index) {
+  const out = document.getElementById("search-results");
+  out.textContent = "searching...";
+  try {
+    const res = await fetch("search/effects?" + new URLSearchParams({ effect, index }).toString());
+    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
+    const data = await res.json();
+    const list = data.results.length
+      ? data.results.map(l => `
+          <div class="result-item">
+            <div class="meta">
+              [${l.branch_id}/${l.dentry_id}] ${skillOrPlain(l.speaker || "?")}
+              <button class="explore-btn" onclick='navigate({view:"line", branch:${l.branch_id}, id:${l.dentry_id}})'>line page</button>
+              <button class="explore-btn" onclick='navigate({view:"branch", branch:${l.branch_id}, at:${l.dentry_id}})'>open in branch &rarr;</button>
+            </div>
+            ${l.text ? `<div>${escapeHtml(l.text)}</div>` : ""}
+            <div class="effect">effect: <code>${escapeHtml(l.effect)}</code></div>
+          </div>
+        `).join("")
+      : "no results.";
+    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-effects", effect, index: i })) + queryTimeHtml(res);
+  } catch (e) {
+    out.textContent = "request failed: " + e;
+  }
+}
+
+async function runSearchChecks(type, skill, difficulty_target, index) {
+  const out = document.getElementById("search-results");
+  out.textContent = "loading...";
+  type = type || "all";
+  try {
+    const usp = new URLSearchParams({ type, index });
+    if (skill) usp.set("skill", skill);
+    if (difficulty_target) usp.set("difficulty_target", difficulty_target);
+    const res = await fetch("search/checks?" + usp.toString());
+    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
+    const data = await res.json();
+    // The check's own skill/difficulty is the point of this list - given a
+    // heading of its own, above the branch meta line. No "check" wording
+    // and no separate skill mention in the badge - the heading already
+    // names the skill, and every result here is a check by definition, so
+    // spelling that out again is just noise. The speaker is dropped
+    // entirely rather than shown-and-redundant: every one of the 235 real
+    // checks is spoken by actor 387 "You" (confirmed, not assumed - this
+    // is a player-initiated check by definition, there's no other kind in
+    // this table), so it never varies and never adds information. Card
+    // background also carries the RED/WHITE distinction, not just the
+    // small badge - meant to be readable at a glance scrolling a long
+    // list, not just on close inspection.
+    const list = data.results.length
+      ? data.results.map(c => `
+          <div class="result-item check-result ${c.is_red ? "red" : "white"}">
+            <div class="check-skill">
+              ${skillOrPlain(c.skill)}
+              <span class="check-req">${c.is_red ? "RED" : "WHITE"} &middot; ${c.difficulty_target ?? `tier ${c.difficulty_tier}`}</span>
+            </div>
+            <div class="meta">
+              [${c.branch_id}/${c.dentry_id}]
+              <button class="explore-btn" onclick='navigate({view:"line", branch:${c.branch_id}, id:${c.dentry_id}})'>line page</button>
+              <button class="explore-btn" onclick='navigate({view:"branch", branch:${c.branch_id}, at:${c.dentry_id}})'>open in branch &rarr;</button>
+            </div>
+            ${c.text ? `<div>${escapeHtml(c.text)}</div>` : ""}
+          </div>
+        `).join("")
+      : "no results.";
+    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-checks", type, skill, difficulty_target, index: i })) + queryTimeHtml(res);
   } catch (e) {
     out.textContent = "request failed: " + e;
   }
@@ -517,6 +777,32 @@ async function runLineDetail(branch, id) {
         <button onclick='navigate({view:"branch", branch:${entry.branch_id}, at:${entry.dentry_id}})'>open in branch explorer &rarr;</button>
         <button onclick="copyToClipboard(lineAddressUrl(${entry.branch_id}, ${entry.dentry_id}), this)">copy line address</button>
       </div>
+      ${queryTimeHtml(res)}
+    `;
+  } catch (e) {
+    out.textContent = "request failed: " + e;
+  }
+}
+
+// A content-less ORB branch (no real dentries, see runSearchOrbs) has
+// nothing for the branch explorer to walk - it's just the description.
+// Shown the same way a single line would be, rather than routing it
+// through machinery meant for a graph it doesn't have.
+async function runOrbDetail(branch) {
+  const out = document.getElementById("line-detail");
+  out.textContent = "loading...";
+  try {
+    const res = await fetch(`branches/${branch}`);
+    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
+    const b = await res.json();
+    out.innerHTML = `
+      <div class="meta">branch ${b.branch_id}</div>
+      <div class="node"><div class="text">${escapeHtml(b.title || "")}</div>
+      ${b.description ? `<div class="text">${escapeHtml(b.description)}</div>` : ""}</div>
+      <div class="toolbar">
+        <button onclick="copyToClipboard(orbAddressUrl(${b.branch_id}), this)">copy ORB link</button>
+      </div>
+      ${queryTimeHtml(res)}
     `;
   } catch (e) {
     out.textContent = "request failed: " + e;
@@ -542,6 +828,16 @@ let currentAnchorDentryId = null;    // walk actually *started* from - "back" fi
                                       // wherever the walk happened to stop.
 const lineInfoCache = {};  // branchId:dentryId -> /lines/{id} response, reused during backward walks
 
+// Every real (branchId, dentryId) anchor visited during the *current*
+// unbroken run of "back" presses - see goBack(). The graph genuinely
+// contains cycles (confirmed, not a data error - e.g. branch 1199/236
+// loops back through itself), so walking backward through one forever
+// returns to a node already seen without ever reaching a true root.
+// Reset whenever a *forward* move happens (choosing an option, jumping to
+// a branch, restarting, or loading a branch fresh) - only consecutive
+// "back" presses accumulate into it.
+let backTrail = new Set();
+
 function indexBranchData(json) {
   branchData = json;
   entriesById = {};
@@ -552,9 +848,16 @@ function indexBranchData(json) {
   }
 }
 
+let branchQueryTimeMs = 0;  // reset per renderChainFrom call, summed across
+                             // every fetch it makes - a flattened walk can
+                             // cross several branches (several fetches) in
+                             // one render, so only the total is meaningful.
+
 async function fetchBranch(branchId) {
   const res = await fetch(`branches/${branchId}`);
   if (!res.ok) throw new Error((await res.json()).detail);
+  const ms = parseFloat(res.headers.get("X-Query-Time-Ms"));
+  if (!isNaN(ms)) branchQueryTimeMs += ms;
   return await res.json();
 }
 
@@ -625,6 +928,14 @@ async function switchToBranch(branchId) {
   const json = await fetchBranch(branchId);
   indexBranchData(json);
   document.getElementById("explorerTitle").textContent = `branch ${json.branch_id}: ${json.title || ""}`;
+  // dialogues.description was already shown in search-result listings, but
+  // silently dropped once you actually opened the branch explorer - most
+  // ORB branches (671 of 781, checked) have NO real dentries at all, their
+  // entire content lives in this field, so opening one showed nothing but
+  // "end of visible branch content" with zero indication why.
+  const descEl = document.getElementById("branchDescription");
+  descEl.textContent = json.description || "";
+  descEl.style.display = json.description ? "" : "none";
 }
 
 // Shared between the full node display and the option-button preview -
@@ -633,15 +944,28 @@ async function switchToBranch(branchId) {
 function checkBadgeHtml(check) {
   // difficulty_target is the real in-game DC (6-20) - see main.py's
   // DIFFICULTY_TIERS comment for how that's derived from the raw db index.
+  // The tier name (Trivial/Easy/.../Impossible) is deliberately left out -
+  // it's redundant with the number and doesn't add anything.
   const label = check.difficulty_target != null
-    ? `${check.difficulty_name} ${check.difficulty_target}`
+    ? `${check.difficulty_target}`
     : `tier ${check.difficulty_tier} (unrecognized)`;
   return `<div class="check ${check.is_red ? "red" : "white"}">`
        + `${check.is_red ? "RED" : "WHITE"} check &middot; ${skillOrPlain(check.skill)} &middot; ${label}`
        + `</div>`;
 }
 
-function renderNodeHtml(entry, branchId, showCopyLink) {
+// Same idea as checkBadgeHtml but for a passive_check (a skill line gated
+// by dentries.difficultypass rather than a player-picked checks row) -
+// shared between the option-button preview and the full node display so
+// the threshold is visible both before and after committing to it.
+function passiveCheckBadgeHtml(pc) {
+  const label = pc.difficulty_target != null
+    ? `${pc.difficulty_target}`
+    : `tier ${pc.difficulty_tier} (unrecognized)`;
+  return `<div class="passive-check">passive check &middot; requires ${skillOrPlain(pc.skill)} ${label} to trigger</div>`;
+}
+
+function renderNodeHtml(entry, branchId, showCopyLink, extraConditions) {
   const copyLink = showCopyLink === false ? "" :
     `<button class="explore-btn" onclick="copyToClipboard(lineAddressUrl(${branchId}, ${entry.dentry_id}), this)">copy line address</button>`;
   let html = `<div class="node ${entry.is_player_choice ? "you" : ""}">`;
@@ -650,13 +974,43 @@ function renderNodeHtml(entry, branchId, showCopyLink) {
   if (entry.condition) {
     html += `<div class="condition">shown only if <code>${escapeHtml(entry.condition)}</code></div>`;
   }
+  // Conditions gating this line weren't necessarily on the line's own
+  // conditionstring - they're often on an intermediate system/junction
+  // node the walk passed through (and transparently skipped) to reach it,
+  // e.g. an IsTHCPresent(...) gate living on a group node above two
+  // otherwise-identical Encyclopedia lines. Those got shown on the option
+  // button before a click, but vanished once the option was actually
+  // picked (renderChainFrom re-walks from the chosen dentry with no
+  // memory of how it got there). Threading them through as extraConditions
+  // keeps them visible after commit, not just before.
+  if (extraConditions && extraConditions.length) {
+    html += `<div class="condition">reached only if ` + extraConditions.map(c => `<code>${escapeHtml(c)}</code>`).join(" and ") + `</div>`;
+  }
+  if (entry.effect) {
+    html += `<div class="effect">effect: <code>${escapeHtml(entry.effect)}</code></div>`;
+  }
+  // A skill "speaking" unprompted (passive_check) is identical to any other
+  // entry in every other way - same speaker/text/condition/effect handling
+  // above - it's only ever gated by a skill-vs-threshold roll instead of a
+  // player-picked option, so it gets its own line rather than the
+  // check-badge treatment (which implies something the player committed to).
+  if (entry.passive_check) {
+    html += passiveCheckBadgeHtml(entry.passive_check);
+  }
   if (entry.check) {
     html += checkBadgeHtml(entry.check);
     if (entry.check.modifiers.length) {
       html += `<ul class="modifiers">` + entry.check.modifiers.map(m => {
         const sign = m.value >= 0 ? "+" : "";
         const cls = m.value >= 0 ? "mod-pos" : "mod-neg";
-        return `<li><span class="${cls}">${sign}${m.value}</span> ${escapeHtml(m.tooltip || m.variable)}</li>`;
+        // tooltip is just a flavor label ("Dresscode: Royalist reenactor") -
+        // it doesn't restate the actual requirement, so show the raw
+        // variable/CheckEquipped(...) expression alongside it too whenever
+        // it differs, rather than dropping that detail on the floor.
+        const detail = (m.tooltip && m.tooltip !== m.variable)
+          ? ` <code class="mod-detail">${escapeHtml(m.variable)}</code>`
+          : "";
+        return `<li><span class="${cls}">${sign}${m.value}</span> ${escapeHtml(m.tooltip || m.variable)}${detail}</li>`;
       }).join("") + `</ul>`;
     }
   }
@@ -685,6 +1039,7 @@ async function renderChainFrom(startBranchId, startDentryId) {
   // block, not one step into the middle of it.
   currentAnchorBranchId = startBranchId;
   currentAnchorDentryId = startDentryId;
+  branchQueryTimeMs = 0;
 
   if (!branchData || branchData.branch_id !== startBranchId) {
     out.textContent = "loading...";
@@ -702,6 +1057,13 @@ async function renderChainFrom(startBranchId, startDentryId) {
   const visited = new Set();
   let finalOptions = [];
   let activeCheckFlag = null;  // sticks until the next real check overwrites it
+  // Conditions on system/junction nodes the walk is about to pass through
+  // to reach the *next* collected entry - resolveNextOptions already
+  // accumulates these while skipping is_system nodes internally, but the
+  // old loop only ever used `only.dentryId`/`only.toDentry`, throwing the
+  // accumulated conditions away. Carried forward here so the entry they
+  // gated can still show them once rendered.
+  let pendingConditions = [];
 
   while (true) {
     const key = currentBranchId + ":" + dentryId;
@@ -710,7 +1072,8 @@ async function renderChainFrom(startBranchId, startDentryId) {
 
     const entry = entriesById[dentryId];
     if (entry && !entry.is_system) {
-      collected.push({ branchId: currentBranchId, entry });
+      collected.push({ branchId: currentBranchId, entry, conditions: pendingConditions });
+      pendingConditions = [];
       if (entry.check) activeCheckFlag = entry.check.flag;
     }
 
@@ -718,6 +1081,7 @@ async function renderChainFrom(startBranchId, startDentryId) {
     if (opts.length !== 1) { finalOptions = opts; break; }  // dead end, or a real choice - stop here
 
     const only = opts[0];
+    pendingConditions = only.conditions || [];
     if (only.type === "cross") {
       try {
         await switchToBranch(only.toBranch);
@@ -736,22 +1100,27 @@ async function renderChainFrom(startBranchId, startDentryId) {
   currentBranchId_global = currentBranchId;
   currentOptions = finalOptions;
 
-  const html = collected.map(({ branchId, entry }) => renderNodeHtml(entry, branchId)).join("")
+  const html = collected.map(({ branchId, entry, conditions }) => renderNodeHtml(entry, branchId, true, conditions)).join("")
     + renderOptions(finalOptions);
-  out.innerHTML = html;
+  out.innerHTML = html + `<div class="meta">query took ${branchQueryTimeMs.toFixed(1)}ms</div>`;
 
-  // Keep the address bar reflecting exactly where we are, without spamming
-  // browser history per click - see the router comment above for why this
-  // is replaceState rather than navigate()/pushState. Bug fixed here: this
-  // used to always write rootBranchId (the branch first opened), not
-  // currentBranchId (the branch dentryId actually belongs to) - since a
-  // flattened walk can cross into a different branch entirely, that made
-  // the address bar (and anything copied from it) point at the wrong
-  // branch/line pair whenever that happened.
+  // Keep the address bar reflecting where this walk *started*
+  // (startBranchId/startDentryId), not wherever it happened to stop -
+  // renderChainFrom is a pure deterministic function of its start point, so
+  // reloading the anchor always reproduces the exact same flattened walk,
+  // including any branch-crossing along the way. Writing the *end* point
+  // instead (as this used to do) silently dropped the crossed-through part
+  // of the path on reload: e.g. arriving at branch 489/8 by flattening
+  // through from 487/27 would reload as a bare "start of 489/8", losing
+  // that it was reached via 487/27 in the first place. The one case this
+  // deliberately does still move the address bar is a genuine new anchor -
+  // i.e. this call's own start point differs from the current URL, which
+  // happens for pushState navigations (chooseOption, jump, restart) but not
+  // for a same-anchor re-render.
   history.replaceState(
-    { view: "branch", branch: currentBranchId, at: dentryId },
+    { view: "branch", branch: startBranchId, at: startDentryId },
     "",
-    `?view=branch&branch=${currentBranchId}&at=${dentryId}`
+    `?view=branch&branch=${startBranchId}&at=${startDentryId}`
   );
 }
 
@@ -763,6 +1132,7 @@ async function runBranchExplorer(branch, at) {
     out.textContent = "no branch specified.";
     return;
   }
+  backTrail = new Set();  // fresh entry point, not a continuation of "back" presses
   const branchId = Number(branch);
   const startDentry = (at !== undefined && at !== null && at !== "") ? Number(at) : 0;
 
@@ -865,7 +1235,12 @@ function renderOptions(options) {
     const idTag = `<span class="opt-id${isDuplicate ? " opt-id-dup" : ""}">[${currentBranchId_global}/${o.dentryId}]</span>`;
     // Committing to this option means committing to its check, if it has
     // one - that needs to be visible before the click, not just after.
-    const checkHtml = e.check ? checkBadgeHtml(e.check) : "";
+    // Same goes for a passive_check (e.g. an Encyclopedia line gated on a
+    // difficultypass threshold) - previously only the player-initiated
+    // `check` got a badge here, so a passive-check option's threshold was
+    // invisible until after it was already chosen.
+    const checkHtml = e.check ? checkBadgeHtml(e.check)
+      : e.passive_check ? passiveCheckBadgeHtml(e.passive_check) : "";
     return `<button class="${cls}" onclick="chooseOption(${i})">`
          + `<div class="opt-row"><span>${idTag} ${speakerLabel}: ${prefix}${escapeHtml(preview)}</span>${outcomeTag(o.outcome)}</div>`
          + checkHtml + condHtml + `</button>`;
@@ -877,6 +1252,7 @@ function renderOptions(options) {
 // re-walks forward from there, deterministically reproducing the same
 // flattened chain + choice buttons.
 async function chooseOption(i) {
+  backTrail = new Set();  // a forward move breaks any "back" streak
   const opt = currentOptions[i];
   if (opt.type === "cross") {
     await renderChainFrom(opt.toBranch, opt.toDentry);
@@ -952,12 +1328,27 @@ async function goBack() {
   const backBtn = document.getElementById("backBtn");
   if (backBtn) backBtn.disabled = true;
   try {
+    backTrail.add(`${currentAnchorBranchId}:${currentAnchorDentryId}`);
     const prev = await resolvePrevReal(currentAnchorBranchId, currentAnchorDentryId);
     if (!prev) {
       const status = document.getElementById("explorerTitle");
       const orig = status.textContent;
       status.textContent = "(already at the branch's root - nothing further back)";
       setTimeout(() => { status.textContent = orig; }, 2000);
+      return;
+    }
+    // The graph genuinely loops in places (see backTrail's own comment) -
+    // without this check, backing up through one of those cycles never
+    // terminates: it keeps finding a real predecessor forever, just
+    // cycling through the same handful of nodes instead of reaching a
+    // root. Once "back" would return to a node this same streak of
+    // presses already passed through, there's nothing new further back to
+    // show, so it stops here instead of looping.
+    if (backTrail.has(`${prev.branchId}:${prev.dentryId}`)) {
+      const status = document.getElementById("explorerTitle");
+      const orig = status.textContent;
+      status.textContent = "(this branch loops back on itself here - no further unique content going back)";
+      setTimeout(() => { status.textContent = orig; }, 2500);
       return;
     }
     await renderChainFrom(prev.branchId, prev.dentryId);
@@ -967,6 +1358,7 @@ async function goBack() {
 }
 
 async function restartBranch() {
+  backTrail = new Set();  // a forward move breaks any "back" streak
   await renderChainFrom(rootBranchId, 0);
 }
 
@@ -979,6 +1371,20 @@ async function restartBranch() {
 if (location.hostname === "arda0.net") {
   document.getElementById("site-header").innerHTML =
     `<a href="https://arda0.net" class="back-link">&larr; back to home</a>`;
+}
+
+// "1.2.10" > "1.2.9" as strings would say the opposite (lexicographic, not
+// numeric) - compares component-by-component instead. Returns true only if
+// a is strictly greater than b; anything malformed/equal/lower is false.
+function isNewerVersion(a, b) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] || 0, nb = pb[i] || 0;
+    if (isNaN(na) || isNaN(nb)) return false;  // malformed - don't guess
+    if (na !== nb) return na > nb;
+  }
+  return false;
 }
 
 // Compares this deployment's version.txt against the same file on the
@@ -998,7 +1404,11 @@ async function checkForUpdate() {
     if (!remoteRes.ok) return;  // repo/file not published yet, or offline - say nothing
     const remoteVersion = (await remoteRes.text()).trim();
 
-    if (remoteVersion && remoteVersion !== localVersion) {
+    // Was a plain !== check - flagged as confusing when a dev/staging box
+    // runs ahead of what's actually been pushed to GitHub (its own version
+    // is newer, not older, but the notice showed anyway since it was just
+    // "different"). Only show it when GitHub is actually ahead.
+    if (remoteVersion && isNewerVersion(remoteVersion, localVersion)) {
       document.getElementById("version-notice").innerHTML =
         `a newer version is available on `
         + `<a href="https://github.com/${cfg.github_repo}" target="_blank" rel="noopener">GitHub</a>`
