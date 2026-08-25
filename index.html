@@ -379,6 +379,11 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "1.2.3", changes: [
+    "Fixed the query timer always showing 0.0ms on a branch's first load, and after using the \"back\" button - it now reflects the real cost each time",
+    "Sped up the \"back\" button noticeably - it was scanning the entire link table with no index every time",
+    "Fixed check modifiers showing bonuses as penalties and penalties as bonuses (backwards colors/signs) across every check in the game",
+  ]},
   { version: "1.2.2", changes: [
     "Protected the original database file - it's now only ever read directly for downloading, never modified, and any data cleanup happens on a separate working copy instead",
     "Fixed a couple of small data issues on that working copy: leftover authoring-tool text in a few fields, and a handful of check bonuses/penalties on two branches that weren't being read correctly",
@@ -1068,8 +1073,20 @@ async function renderChainFrom(startBranchId, startDentryId) {
   // block, not one step into the middle of it.
   currentAnchorBranchId = startBranchId;
   currentAnchorDentryId = startDentryId;
-  branchQueryTimeMs = 0;
-
+  // branchQueryTimeMs is deliberately NOT reset here - it used to be, but
+  // runBranchExplorer() (the entry point for any fresh branch URL) needs
+  // to fetch the branch itself first, before this function even runs, to
+  // validate the requested line actually exists in it. Resetting here
+  // wiped out that already-real fetch time whenever this ran right after
+  // it, with nothing left
+  // to re-fetch to replace it - every fresh branch view was showing
+  // "query took 0.0ms" no matter how expensive the actual query was
+  // (confirmed on branch 980, ~250-300ms shown as 0.0). Each of this
+  // function's four callers (runBranchExplorer, chooseOption, goBack,
+  // restartBranch) now resets it themselves, right before whatever fetch
+  // *they* are responsible for - so the counter always starts at 0 for a
+  // given user action, but never after that action's own fetch already
+  // happened.
   if (!branchData || branchData.branch_id !== startBranchId) {
     out.textContent = "loading...";
     try {
@@ -1162,6 +1179,7 @@ async function runBranchExplorer(branch, at) {
     return;
   }
   backTrail = new Set();  // fresh entry point, not a continuation of "back" presses
+  branchQueryTimeMs = 0;  // this function's own fetch below is the start of a new timing window
   const branchId = Number(branch);
   const atGiven = at !== undefined && at !== null && at !== "";
 
@@ -1179,15 +1197,14 @@ async function runBranchExplorer(branch, at) {
       return;
     }
   }
-  // Plain dentry 0 is the safe default for almost every branch (the
-  // forward walk already skips through its is_system HUB/"input" chain to
-  // reach real content) - but see _compute_default_entry's comment on the
-  // backend: a handful of branches have dentry 0 sitting in a disconnected
-  // part of the graph with no real content in it at all, while the actual
-  // scene starts somewhere else entirely. default_entry_dentry_id is 0
-  // for every normal branch and only differs for those - only used when
-  // the caller didn't pin an exact line explicitly.
-  const startDentry = atGiven ? Number(at) : (branchData.default_entry_dentry_id ?? 0);
+  // Plain dentry 0 is the safe default for every branch - the forward walk
+  // already skips through its is_system HUB/"input" chain to reach real
+  // content. A handful of branches used to have dentry 0 dead-ending in a
+  // disconnected part of the graph (see _weld_disconnected_hubs in
+  // main.py's OptimizedDE.db build step) - fixed at the data layer now by
+  // welding those dead ends directly to the branch's real content, so 0
+  // is reliably correct here again instead of needing a runtime detour.
+  const startDentry = atGiven ? Number(at) : 0;
   if (!(startDentry in entriesById)) {
     out.textContent = `line ${startDentry} not found in branch ${branchId}.`;
     return;
@@ -1291,6 +1308,7 @@ function renderOptions(options) {
 // flattened chain + choice buttons.
 async function chooseOption(i) {
   backTrail = new Set();  // a forward move breaks any "back" streak
+  branchQueryTimeMs = 0;  // this action's own timing window starts here
   const opt = currentOptions[i];
   if (opt.type === "cross") {
     await renderChainFrom(opt.toBranch, opt.toDentry);
@@ -1327,6 +1345,15 @@ async function fetchLineInfo(branchId, dentryId) {
   if (lineInfoCache[key]) return lineInfoCache[key];
   const res = await fetch(`branches/${branchId}/lines/${dentryId}`);
   if (!res.ok) return null;
+  // "back" can make several of these calls per press (see resolvePrevReal
+  // below) - previously none of that real cost was ever added to
+  // branchQueryTimeMs, only fetchBranch's fetches were, so "back" could
+  // do real, sometimes-multi-hop backend work and still show
+  // "query took 0.0ms" because whatever ran *after* the walk (usually
+  // nothing, since the target branch is normally already loaded) was the
+  // only thing ever counted.
+  const ms = parseFloat(res.headers.get("X-Query-Time-Ms"));
+  if (!isNaN(ms)) branchQueryTimeMs += ms;
   const data = await res.json();
   lineInfoCache[key] = data;
   return data;
@@ -1335,6 +1362,8 @@ async function fetchLineInfo(branchId, dentryId) {
 async function fetchPredecessors(branchId, dentryId) {
   const res = await fetch(`branches/${branchId}/lines/${dentryId}/predecessors`);
   if (!res.ok) return [];
+  const ms = parseFloat(res.headers.get("X-Query-Time-Ms"));
+  if (!isNaN(ms)) branchQueryTimeMs += ms;
   return await res.json();
 }
 
@@ -1365,6 +1394,7 @@ async function goBack() {
   const out = document.getElementById("explorer");
   const backBtn = document.getElementById("backBtn");
   if (backBtn) backBtn.disabled = true;
+  branchQueryTimeMs = 0;  // this action's own timing window starts here
   try {
     backTrail.add(`${currentAnchorBranchId}:${currentAnchorDentryId}`);
     const prev = await resolvePrevReal(currentAnchorBranchId, currentAnchorDentryId);
@@ -1397,9 +1427,8 @@ async function goBack() {
 
 async function restartBranch() {
   backTrail = new Set();  // a forward move breaks any "back" streak
-  const restartDentry = (branchData && branchData.branch_id === rootBranchId)
-    ? (branchData.default_entry_dentry_id ?? 0) : 0;
-  await renderChainFrom(rootBranchId, restartDentry);
+  branchQueryTimeMs = 0;  // this action's own timing window starts here
+  await renderChainFrom(rootBranchId, 0);
 }
 
 // --- site header + update check ----------------------------------------

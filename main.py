@@ -183,6 +183,26 @@ def _normalize_numeric_columns(conn: sqlite3.Connection) -> None:
                 print(f"  normalized {cur.rowcount} bad-type row(s) in {table}.{col}", flush=True)
 
 
+# modifiers.modifier is stored inverted relative to the player-facing
+# bonus/penalty every other source (the wiki, the actual game) agrees on -
+# confirmed 10-for-10 against branch 1370/11 ("Shoot Kortenaer" - Hand/Eye
+# Coordination): every single modifier's sign in the source db is the
+# exact opposite of what discoelysium.wiki.gg documents for it (e.g. "Got
+# him talking" is +1 per the wiki, -1 here; "Just stood there?!" is -1 per
+# the wiki, +1 here). Most likely explanation: the source dump captured
+# whatever the internal game engine computes at the check/difficulty
+# level (where a positive adjustment makes the check *harder*, i.e. worse
+# for the player) rather than the player-facing roll bonus shown on
+# screen (where positive always means "helping you"). Whichever the exact
+# mechanism, the practical fix is the same: flip the sign so a positive
+# value here always means "green, helps the player," matching what a
+# person looking at this data (or the real game) would expect - arda's
+# call (2026-08-25), not something to leave "technically as extracted."
+def _invert_modifier_signs(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("UPDATE modifiers SET modifier = -modifier WHERE modifier IS NOT NULL")
+    print(f"  inverted sign on {cur.rowcount} modifiers.modifier row(s)", flush=True)
+
+
 # The exact same inert Chat Mapper authoring-tool boilerplate comment
 # shows up verbatim on five columns across three tables - always this
 # exact literal text, never anything real between the brackets. Confirmed
@@ -241,6 +261,120 @@ def _create_checks_curated_view(conn: sqlite3.Connection) -> None:
     conn.execute(f"CREATE VIEW checks_curated AS SELECT * FROM checks WHERE conversationid NOT IN ({ids})")
 
 
+# dlinks has 134,491 rows across the whole db and, in the source schema,
+# no index at all - /branches/{id}/lines/{id}/predecessors (what the
+# branch explorer's "back" button calls, once per hop it walks backward)
+# filters on exactly these two columns and was doing a full table scan
+# every single call as a result. Confirmed via EXPLAIN QUERY PLAN ("SCAN
+# dlinks") and measured directly: ~12ms per call unindexed vs ~0.06ms
+# indexed, a ~200x difference - and "back" can need several sequential
+# hops (one predecessors call + one lines call each, not parallelized) to
+# walk through a chain of system/junction nodes back to the nearest real
+# line, so this compounds into real, felt latency on branches with a few
+# hops to cross. Not a regression - dlinks never had this index, even in
+# the original DiscoElysium.db - just the right place to finally add it,
+# same reasoning as every other OptimizedDE.db-layer fix here.
+def _create_dlinks_index(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE INDEX idx_dlinks_destination ON dlinks(destinationconversationid, destinationdialogueid)"
+    )
+
+
+def _is_system_row(isgroup, actor, dialoguetext) -> bool:
+    """Same is_system rule _build_entry uses (isgroup=1, or actor 0 "HUB"
+    with placeholder text) - duplicated here rather than shared, since
+    this runs standalone in the build step against plain sqlite3 rows,
+    not the ORM row objects _build_entry works with."""
+    return bool(isgroup) or (actor == 0 and dialoguetext in (None, "", "0"))
+
+
+# Confirmed by walking the whole graph (not assumed): 30 branches have
+# dentry 0's own reachable component containing zero real (non-system)
+# content, while the actual scene sits in a separate component nothing
+# links back into - e.g. branch 1235, where "input" (dentry 1) dead-ends
+# with no outgoing links at all, and the real "Time to get my gun!" scene
+# starts at dentry 2 with no incoming links of its own. Previously worked
+# around per-request in the API (_compute_default_entry, computing an
+# alternate start point on every /branches/{id} call) rather than fixed
+# at the source - moved here instead: this welds each dead-end system
+# leaf directly to the branch's real content with a new dlinks row, the
+# same kind of edge every other (connected) branch already has, so the
+# existing forward walk finds it automatically and dentry 0 is a safe
+# default for every branch again, no runtime detour needed.
+#
+# 22 of the 30 have a clean real root (a real dentry with no incoming
+# link at all) to weld to. The other 8 (616, 700, 746, 759, 1025, 1186,
+# 1371, 1373) have their real content sitting entirely inside a closed
+# cycle with no natural entry point - welded to their lowest-id real
+# dentry instead, which isn't a "true root" (it has incoming edges from
+# elsewhere in its own cycle) but is a perfectly valid, deterministic
+# point to enter that cycle from, same as any of the other nodes in it
+# would be.
+def _weld_disconnected_hubs(conn: sqlite3.Connection) -> None:
+    dentries_by_branch: dict[int, dict[int, tuple]] = {}
+    for cid, did, isgroup, actor, text in conn.execute(
+        "SELECT conversationid, id, isgroup, actor, dialoguetext FROM dentries"
+    ):
+        dentries_by_branch.setdefault(cid, {})[did] = (isgroup, actor, text)
+
+    links_by_branch: dict[int, dict[int, list[int]]] = {}
+    for cid, origin, dest in conn.execute(
+        "SELECT originconversationid, origindialogueid, destinationdialogueid FROM dlinks "
+        "WHERE originconversationid = destinationconversationid"
+    ):
+        links_by_branch.setdefault(cid, {}).setdefault(origin, []).append(dest)
+
+    welds: list[tuple[int, int, int]] = []  # (branch, dead_leaf, weld_target)
+    for cid, dmap in dentries_by_branch.items():
+        if 0 not in dmap:
+            continue
+        succs = links_by_branch.get(cid, {})
+
+        seen: set[int] = set()
+        stack = [0]
+        reaches_real = False
+        dead_leaves = []
+        while stack:
+            n = stack.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            row = dmap.get(n)
+            if row is None:
+                continue
+            if not _is_system_row(*row):
+                reaches_real = True
+                break
+            outs = succs.get(n, [])
+            if not outs:
+                dead_leaves.append(n)
+            for s in outs:
+                if s not in seen:
+                    stack.append(s)
+        if reaches_real or not dead_leaves:
+            continue  # normal branch, or no dead ends to weld (e.g. real content is unreachable but not via a leaf - none observed)
+
+        real_ids = sorted(did for did, row in dmap.items() if not _is_system_row(*row))
+        if not real_ids:
+            continue  # genuinely no real content (most ORBs) - nothing to weld to, and nothing wrong
+
+        has_incoming = {dd for outs in succs.values() for dd in outs}
+        real_roots = [did for did in real_ids if did not in has_incoming]
+        target = real_roots[0] if real_roots else real_ids[0]
+
+        for leaf in dead_leaves:
+            welds.append((cid, leaf, target))
+
+    for cid, leaf, target in welds:
+        conn.execute(
+            "INSERT INTO dlinks (originconversationid, origindialogueid, destinationconversationid, destinationdialogueid, isConnector, priority) "
+            "VALUES (?, ?, ?, ?, 0, 2)",
+            (cid, leaf, cid, target),
+        )
+    if welds:
+        print(f"  welded {len(welds)} disconnected branch hub(s) to their real content", flush=True)
+
+
 def ensure_optimized_db() -> None:
     """Builds mountpoint/OptimizedDE.db from mountpoint/DiscoElysium.db if
     it doesn't already exist. Deliberately NOT committed to the repo (it's
@@ -264,8 +398,11 @@ def ensure_optimized_db() -> None:
     conn = sqlite3.connect(_OPTIMIZED_DB_PATH)
     try:
         _normalize_numeric_columns(conn)
+        _invert_modifier_signs(conn)
         _clean_boilerplate_text(conn)
         _create_checks_curated_view(conn)
+        _create_dlinks_index(conn)
+        _weld_disconnected_hubs(conn)
         conn.executescript(
             """
             CREATE VIRTUAL TABLE dentries_fts USING fts5(
@@ -907,59 +1044,7 @@ async def _fetch_branch(conversation_id: int):
             "description": dialogue.description,
             "entries": entries,
             "links": links,
-            "default_entry_dentry_id": _compute_default_entry(entries, links),
         }
-
-
-def _compute_default_entry(entries: list[dict], links: list[dict]) -> int:
-    """Normally dentry 0 (via its is_system HUB/"input" chain) reaches the
-    branch's real content - the frontend already walks/skips system nodes
-    to find it, so 0 is always a safe default start. But confirmed via a
-    full scan of every branch in the db (not assumed): 30 branches have a
-    disconnected graph where dentry 0's own reachable component contains
-    zero real (non-system) content, while the actual scene sits in a
-    separate component nothing links back into 0 for. Branch 1235 is one -
-    "input" (dentry 1) dead-ends with no outgoing links at all, while the
-    real "Time to get my gun!" scene starts at dentry 2, which has zero
-    incoming links of its own. Previously the explorer always opened at 0
-    regardless, so these branches just rendered as empty/"end of visible
-    branch content" with no explanation. Falls back to the lowest-id real
-    dentry that has no incoming link within the branch - the same kind of
-    "true root" dentry 0 already is for every normal branch - only when
-    0's own component turns out to have no real content."""
-    entries_by_id = {e["dentry_id"]: e for e in entries}
-    if 0 not in entries_by_id:
-        return 0
-    succs: dict[int, list[int]] = {}
-    for l in links:
-        if not l["leaves_branch"]:
-            succs.setdefault(l["from_dentry_id"], []).append(l["to_dentry_id"])
-
-    def reaches_real_content(start: int) -> bool:
-        seen: set[int] = set()
-        stack = [start]
-        while stack:
-            n = stack.pop()
-            if n in seen:
-                continue
-            seen.add(n)
-            e = entries_by_id.get(n)
-            if e and not e["is_system"]:
-                return True
-            for s in succs.get(n, []):
-                if s not in seen:
-                    stack.append(s)
-        return False
-
-    if reaches_real_content(0):
-        return 0
-
-    has_incoming = {l["to_dentry_id"] for l in links if not l["leaves_branch"]}
-    real_roots = sorted(
-        did for did, e in entries_by_id.items()
-        if not e["is_system"] and did not in has_incoming
-    )
-    return real_roots[0] if real_roots else 0
 
 
 # The Lua "effect" snippet (dentries.userscript) is one or more function
