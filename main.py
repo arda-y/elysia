@@ -42,6 +42,7 @@ user input).
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 
@@ -300,6 +301,34 @@ async def _resolve_character_id(session: AsyncSession, character: str) -> int:
 
 PAGE_SIZE = 100  # fixed page size for every paginated (search) endpoint
 
+MAX_SEARCH_TERMS = 10  # matches fayde's own "up to 10 words/part words" limit
+
+
+def build_fts_query(raw: str) -> str | None:
+    """Turns free-typed search text into an FTS5 query: "..."-quoted
+    segments become literal phrases, remaining whitespace-separated words
+    each become their own term, and every term is required (AND) rather
+    than any-of - e.g. `kim "streets and sodium lights" harry` requires
+    all three. Matches fayde's documented search behavior (quote for an
+    exact phrase, otherwise up to N separate words) rather than the
+    previous behavior, which treated the whole input as one literal
+    phrase (a bare two-word query like "harry kim" - not adjacent in any
+    real line - used to silently return zero results).
+
+    Every term is wrapped in its own double quotes before reaching FTS5,
+    not just the ones the user quoted - this is what makes typing FTS5
+    query syntax (AND/OR/NOT/-/*) into the search box behave as literal
+    text instead of being parsed as query operators, since a quoted
+    phrase's contents are never re-interpreted as syntax.
+    """
+    phrases = re.findall(r'"([^"]*)"', raw)
+    remainder = re.sub(r'"[^"]*"', " ", raw)
+    words = remainder.split()
+    terms = [t.strip() for t in (phrases + words) if t.strip()][:MAX_SEARCH_TERMS]
+    if not terms:
+        return None
+    return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
+
 
 @app.get("/search/lines")
 @limiter.limit(RATE_LIMIT_DEFAULT)
@@ -309,7 +338,8 @@ async def api_search_lines(
     character: str | None = None,
     index: int = 0,
 ):
-    if not q and not character:
+    fts_query = build_fts_query(q) if q else None
+    if not fts_query and not character:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="provide at least one of q or character",
@@ -326,10 +356,10 @@ async def api_search_lines(
         # the FTS5 join entirely rather than passing it a blank query.
         conditions = ["de.dialoguetext IS NOT NULL", "de.dialoguetext != ''", "de.dialoguetext != '0'"]
         params: dict = {"index": index, "limit": PAGE_SIZE}
-        if q:
+        if fts_query:
             from_clause = "dentries_fts f JOIN dentries de ON de.rowid = f.rowid"
             conditions.append("f.dialoguetext MATCH :q")
-            params["q"] = q
+            params["q"] = fts_query
         else:
             from_clause = "dentries de"
         if actor_id is not None:
@@ -373,12 +403,13 @@ async def api_search_lines(
 @app.get("/search/branches")
 @limiter.limit(RATE_LIMIT_DEFAULT)
 async def api_search_branches(request: Request, title: str, index: int = 0):
-    if not title.strip():
+    fts_query = build_fts_query(title) if title.strip() else None
+    if not fts_query:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="title must not be empty")
     index = max(0, index)
 
     async with AsyncSearchSessionLocal() as session:
-        params = {"title": title, "index": index, "limit": PAGE_SIZE}
+        params = {"title": fts_query, "index": index, "limit": PAGE_SIZE}
 
         count_result = await session.execute(
             text(
@@ -417,6 +448,68 @@ async def api_search_branches(request: Request, title: str, index: int = 0):
             "limit": PAGE_SIZE,
             "has_more": index + len(results) < total,
         }
+
+
+# "ORB" is a real category in this dataset, not something invented here -
+# mostly self-contained flavor/inspection vignettes (781 of 1428 branches),
+# almost always never cross-linking out to another branch (checked: only 2
+# do, and even those only link to another ORB, never back into a main
+# dialogue tree - there's no "returns once it's done" edge anywhere in the
+# graph; that hand-off is handled by the game's own UI, not represented
+# here). Matched on the real word "orb" via a regex word boundary, not a
+# plain substring - a plain `LIKE '%orb%'` would wrongly catch e.g.
+# "DOOMED / ELECTRONIC DOORBELL" (contains "orb" inside "doorbell").
+# Since traversal needs nothing special (an ORB is just a branch, and the
+# existing explorer already handles arbitrary branches with zero
+# cross-branch links just fine), this only needs a way to find them - the
+# branch explorer covers the rest for free.
+_ORB_WORD_RE = re.compile(r"\borb\b", re.IGNORECASE)
+_orb_branches_cache: list[dict] | None = None
+
+
+async def _get_orb_branches() -> list[dict]:
+    global _orb_branches_cache
+    if _orb_branches_cache is None:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(text("SELECT id, title, description FROM dialogues WHERE title IS NOT NULL"))
+            _orb_branches_cache = [
+                {"branch_id": row.id, "title": row.title, "description": row.description}
+                for row in result.fetchall()
+                if _ORB_WORD_RE.search(row.title)
+            ]
+            _orb_branches_cache.sort(key=lambda b: b["title"])
+    return _orb_branches_cache
+
+
+@app.get("/search/orbs")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_search_orbs(request: Request, q: str | None = None, index: int = 0):
+    """Like /search/branches, but scoped to the ORB category, and q is
+    optional - a blank query browses the full list (matching fayde's
+    separate "Contemplate ORBS" browsing mode), a query filters by
+    title/description substring within that list."""
+    index = max(0, index)
+    all_orbs = await _get_orb_branches()
+
+    if q:
+        needle = q.lower()
+        matching = [
+            b for b in all_orbs
+            if needle in b["title"].lower() or (b["description"] and needle in b["description"].lower())
+        ]
+    else:
+        matching = all_orbs
+
+    total = len(matching)
+    page = matching[index : index + PAGE_SIZE]
+
+    return {
+        "results": page,
+        "total": total,
+        "index": index,
+        "limit": PAGE_SIZE,
+        "has_more": index + len(page) < total,
+    }
 
 
 # checks.difficulty is NOT the target number shown in-game (6-20) - it's a

@@ -98,6 +98,7 @@
       <button data-mode="branches" onclick="setMode('branches')">a branch / scene</button>
       <button data-mode="line" onclick="setMode('line')">an exact line (branch/id)</button>
       <button data-mode="branch" onclick="setMode('branch')">an exact branch (id)</button>
+      <button data-mode="orbs" onclick="setMode('orbs')">browse ORBs</button>
     </div>
     <div id="mode-form" style="margin-top: 0.6rem;"></div>
   </div>
@@ -246,6 +247,7 @@ const VIEW_CONTAINERS = {
   home: "view-home",
   "search-lines": "view-search",
   "search-branches": "view-search",
+  "search-orbs": "view-search",
   line: "view-line",
   branch: "view-branch",
 };
@@ -263,6 +265,7 @@ function render(params) {
   showView(view);
   if (view === "search-lines") runSearchLines(params.q, params.character, Number(params.index || 0));
   else if (view === "search-branches") runSearchBranches(params.title, Number(params.index || 0));
+  else if (view === "search-orbs") runSearchOrbs(params.q, Number(params.index || 0));
   else if (view === "line") runLineDetail(params.branch, params.id);
   else if (view === "branch") runBranchExplorer(params.branch, params.at);
   else renderHome();
@@ -305,7 +308,10 @@ function renderHome() {
         <select id="home-character"><option value="">-- any character --</option></select>
         <button onclick="submitLinesSearch()">search</button>
       </div>
-      <p class="meta">text and character combine with AND - both must match if both are given.</p>
+      <p class="meta">
+        text and character combine with AND - both must match if both are given.
+        multiple words all need to match too (any order) - quote a phrase for an exact match, e.g. "streets and sodium lights".
+      </p>
     `;
     populateCharacterSelect(document.getElementById("home-character"));
   } else if (currentMode === "branches") {
@@ -328,6 +334,19 @@ function renderHome() {
         <input type="text" id="home-branch" placeholder="branch id, e.g. 182">
         <button onclick="submitBranchLookup()">go</button>
       </div>
+    `;
+  } else if (currentMode === "orbs") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <input type="text" id="home-orb-q" placeholder="optional keyword - leave blank to browse all">
+        <button onclick="submitOrbSearch()">browse</button>
+      </div>
+      <p class="meta">
+        "ORBs" are self-contained flavor/inspection vignettes (a discarded tire,
+        a rain-soaked rooftop, that sort of thing) - a real category in the
+        data, not a normal branching conversation. Each one is its own branch,
+        so opening one uses the same explorer as everything else.
+      </p>
     `;
   }
 }
@@ -367,6 +386,11 @@ function submitBranchLookup() {
     return;
   }
   navigate({ view: "branch", branch: Number(raw) });
+}
+
+function submitOrbSearch() {
+  const q = document.getElementById("home-orb-q").value.trim();
+  navigate({ view: "search-orbs", q });
 }
 
 // --- search results --------------------------------------------------------
@@ -441,6 +465,33 @@ async function runSearchBranches(title, index) {
         `).join("")
       : "no results.";
     out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-branches", title, index: i }));
+  } catch (e) {
+    out.textContent = "request failed: " + e;
+  }
+}
+
+async function runSearchOrbs(q, index) {
+  const out = document.getElementById("search-results");
+  out.textContent = "loading...";
+  try {
+    const usp = new URLSearchParams({ index });
+    if (q) usp.set("q", q);
+    const res = await fetch("search/orbs?" + usp.toString());
+    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
+    const data = await res.json();
+    const list = data.results.length
+      ? data.results.map(b => `
+          <div class="result-item">
+            <div class="meta">
+              [branch ${b.branch_id}]
+              <button class="explore-btn" onclick='navigate({view:"branch", branch:${b.branch_id}})'>open branch &rarr;</button>
+            </div>
+            <div><strong>${escapeHtml(b.title || "(untitled)")}</strong></div>
+            ${b.description ? `<div class="meta">${escapeHtml(b.description)}</div>` : ""}
+          </div>
+        `).join("")
+      : "no results.";
+    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-orbs", q, index: i }));
   } catch (e) {
     out.textContent = "request failed: " + e;
   }

@@ -1,0 +1,9 @@
+# OptimizedDE.db is generated at container startup (see main.py's
+# ensure_optimized_db()) - it should never be baked into the image from
+# whatever happens to be sitting in a local dev copy of mountpoint/, or a
+# stale/incomplete one gets shipped and the app skips rebuilding it
+# (this actually happened once: a stray 0-byte file locally became a
+# tableless "optimized" db in the image, and the app crashed on boot).
+mountpoint/OptimizedDE.db
+.git
+__pycache__

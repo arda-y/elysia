@@ -13,6 +13,15 @@ skill checks, modifiers, conditional line variants, all present).
   match, not just whole words) and paginated at a fixed 100 results per
   page, with `total`/`has_more` in the response so a result set past one
   page is never silently truncated.
+- **Multi-word and quoted-phrase search** - separate words are AND'd
+  together in any order (`grey sky` finds lines with both), and a
+  `"quoted phrase"` requires that exact sequence. Because of the trigram
+  index, each word also matches as a substring wherever it occurs, so a
+  loose/misspelled fragment like `reets sodium` still finds "streets and
+  sodium lights."
+- **Browse ORBs** - a dedicated mode that lists the game's optional
+  flavor/contemplation branches on their own, rather than mixed in with
+  the main dialogue search.
 - **Look up an exact line or branch** directly, by id.
 - **Interactive branch explorer** - walks the dialogue tree starting at a
   branch's root, automatically skipping the tree's internal
