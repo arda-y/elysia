@@ -737,7 +737,16 @@ async def add_timing_header(request: Request, call_next):
 @app.get("/")
 @limiter.limit(RATE_LIMIT_DEFAULT)
 async def root(request: Request):
-    return FileResponse("index.html", media_type="text/html")
+    # index.html is the one file that changes on every release but was
+    # otherwise cacheable by default - a plain browser refresh could keep
+    # serving a stale copy after a deploy (arda hit this after v1.3.1,
+    # only resolved by "a rebuild" clearing whatever had cached it).
+    # no-store forces every load to actually re-fetch.
+    return FileResponse(
+        "index.html",
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 _characters_cache: list[dict] | None = None  # the actors table never changes at runtime (read-only db) - fetch once

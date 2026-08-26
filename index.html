@@ -379,6 +379,11 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "1.3.3", changes: [
+    "Fixed the previous passive-check fix not covering every case - when only some of a fork's branches pick up an extra passive check partway through (not all of them), the ones they DO share in common now still render properly instead of falling back to the old duplicate/bleeding display",
+    "Fixed a passive check that itself leads straight into a further real fork - its downstream options were showing up as if they belonged to the check's own position, wearing its difficulty badge without ever showing its actual line, and picking one silently walked through the check again anyway",
+    "Fixed the page sometimes serving a stale cached copy after a deploy instead of the real update",
+  ]},
   { version: "1.3.2", changes: [
     "Fixed a passive skill check (or chain of them) sitting right before a real multi-way choice - the check(s) weren't showing up in the dialogue at all, their conditions were bleeding into the choice buttons instead, and the choice itself could get listed more than once",
   ]},
@@ -972,7 +977,28 @@ function resolveNextOptions(dentryId, activeFlag, visited, outcome, conditions, 
       nextVisited.add(l.to_dentry_id);
       const lineConditions = dest.condition ? [...conditions, dest.condition] : conditions;
       const nextPassThrough = [...passThrough, { dentryId: l.to_dentry_id, conditions: lineConditions }];
-      options.push(...resolveNextOptions(l.to_dentry_id, activeFlag, nextVisited, outcome, [], nextPassThrough));
+      const beyond = resolveNextOptions(l.to_dentry_id, activeFlag, nextVisited, outcome, [], nextPassThrough);
+      // The above only holds when the check leads onward to a single real
+      // continuation (or a dead end) - the "no distinct path lost" claim
+      // assumes there's nothing to distinguish yet. If the check instead
+      // opens straight onto a genuine further fork, flattening it in here
+      // would mix that fork's several destinations into this level's own
+      // sibling list, right alongside options that never went through the
+      // check at all - arda, 2026-08-26: confirmed on branch 1370/291
+      // (a passive check whose downstream immediately re-forks 4 ways,
+      // sitting next to an unrelated direct sibling, 307): the 4
+      // downstream options showed up as if they were 291's own, each
+      // wearing 292's difficulty badge without ever showing 292's actual
+      // line, and picking any of them silently walked through 292 first
+      // anyway. Stop at the check itself instead - render it as its own
+      // stopping option, exactly like a real line - and let the normal
+      // walk discover its downstream fork fresh once it's actually
+      // entered.
+      if (beyond.length > 1) {
+        options.push({ type: "line", dentryId: l.to_dentry_id, outcome: outcome || null, conditions: lineConditions, passThrough });
+      } else {
+        options.push(...beyond);
+      }
     } else {
       // The destination line can carry its own gating condition directly
       // (not just via an intermediate system junction) - e.g. two options
@@ -1029,23 +1055,31 @@ function mergeIdenticalOptions(options) {
 // shared prefix is real content that needs rendering once, exactly like
 // the already-handled case of a passThrough collapsing to a single option
 // - it's just reached via renderChainFrom's while-loop breaking (a genuine
-// fork) instead of continuing (a full collapse). Returns the shared
-// prefix, or [] if there isn't one - either no option has any passThrough
-// at all, or they disagree (e.g. two independent passive checks forking
-// in parallel rather than one chain feeding a single downstream fork) -
-// that disagreement case is left alone rather than guessed at.
+// fork) instead of continuing (a full collapse).
+//
+// The shared part can also be partial - e.g. arda, 2026-08-27: branch
+// 1370/5 walks through one passive check (291), reaches a system junction
+// that itself forks, and only ONE side of that fork picks up a *second*
+// passive check (292) before its own further real fork - the other side
+// has none. Every option there still shares 291, they just don't all
+// share 292 too. Returning [] for that (the old "reject on any length
+// mismatch" behavior) meant 291 never got rendered as its own line at
+// all, and re-appeared as a duplicate badge on every single option button
+// instead of once - same visible "bleeding" symptom as the fully-disagreeing
+// case, but from a shared-then-diverging chain, not two unrelated ones.
+// Returns the longest prefix every option actually agrees on (possibly
+// empty, if they disagree from the very first entry).
 function commonPassThroughPrefix(opts) {
   if (!opts.length) return [];
-  const first = opts[0].passThrough || [];
-  if (!first.length) return [];
+  let prefix = opts[0].passThrough || [];
   for (const o of opts) {
     const pt = o.passThrough || [];
-    if (pt.length !== first.length) return [];
-    for (let i = 0; i < first.length; i++) {
-      if (pt[i].dentryId !== first[i].dentryId) return [];
-    }
+    let i = 0;
+    while (i < prefix.length && i < pt.length && pt[i].dentryId === prefix[i].dentryId) i++;
+    prefix = prefix.slice(0, i);
+    if (!prefix.length) break;
   }
-  return first;
+  return prefix;
 }
 
 // Switches the loaded branchData/index to branchId, fetching if needed,
@@ -1218,19 +1252,21 @@ async function renderChainFrom(startBranchId, startDentryId) {
 
     const opts = resolveNextOptions(dentryId, activeCheckFlag);
     if (opts.length !== 1) {
-      // A genuine fork (or dead end) - stop here. But first, if every
-      // option shares the same passive-check prefix (see
-      // commonPassThroughPrefix), that prefix is real content that was
-      // never actually stopped at on its own - render it now, in order,
-      // instead of leaving it to bleed into the option buttons below (see
-      // renderOptions' passThroughHtml, which is now just a fallback for
-      // the disagreeing-prefix case this can't resolve).
+      // A genuine fork (or dead end) - stop here. But first, render
+      // whatever passive-check prefix every option agrees on (see
+      // commonPassThroughPrefix - possibly only part of some options'
+      // full passThrough, if they share a first stretch and then
+      // diverge). That shared part is real content that was never
+      // actually stopped at on its own - render it now, in order, and
+      // strip only that shared part from each option, leaving any
+      // per-option remainder to renderOptions' passThroughHtml (which
+      // still handles a check that only some options walked through).
       const prefix = commonPassThroughPrefix(opts);
       for (const pt of prefix) {
         const ptEntry = entriesById[pt.dentryId];
         if (ptEntry) collected.push({ branchId: currentBranchId, entry: ptEntry, conditions: pt.conditions || [] });
       }
-      finalOptions = prefix.length ? opts.map(o => ({ ...o, passThrough: [] })) : opts;
+      finalOptions = opts.map(o => ({ ...o, passThrough: (o.passThrough || []).slice(prefix.length) }));
       break;
     }
 
