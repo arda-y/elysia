@@ -379,6 +379,9 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "1.3.2", changes: [
+    "Fixed a passive skill check (or chain of them) sitting right before a real multi-way choice - the check(s) weren't showing up in the dialogue at all, their conditions were bleeding into the choice buttons instead, and the choice itself could get listed more than once",
+  ]},
   { version: "1.3.1", changes: [
     "Fixed 10 branches whose real starting point is a check that lives in a different branch entirely - opening them cold (or hitting \"restart\") now points you to that real entry instead of a fabricated local one",
     "Fixed passive skill checks (a skill \"speaking\" unprompted) sometimes being shown as a clickable choice instead of a normal line - they're never something the player picks, so they no longer stop the explorer on their own",
@@ -1019,6 +1022,32 @@ function mergeIdenticalOptions(options) {
   return options;
 }
 
+// A passive-check chain doesn't always fully collapse a fork away (see
+// mergeIdenticalOptions) - sometimes it leads into a REAL multi-way fork,
+// where every option still carries the exact same passThrough prefix (the
+// same checks, walked once, before the graph actually branches). That
+// shared prefix is real content that needs rendering once, exactly like
+// the already-handled case of a passThrough collapsing to a single option
+// - it's just reached via renderChainFrom's while-loop breaking (a genuine
+// fork) instead of continuing (a full collapse). Returns the shared
+// prefix, or [] if there isn't one - either no option has any passThrough
+// at all, or they disagree (e.g. two independent passive checks forking
+// in parallel rather than one chain feeding a single downstream fork) -
+// that disagreement case is left alone rather than guessed at.
+function commonPassThroughPrefix(opts) {
+  if (!opts.length) return [];
+  const first = opts[0].passThrough || [];
+  if (!first.length) return [];
+  for (const o of opts) {
+    const pt = o.passThrough || [];
+    if (pt.length !== first.length) return [];
+    for (let i = 0; i < first.length; i++) {
+      if (pt[i].dentryId !== first[i].dentryId) return [];
+    }
+  }
+  return first;
+}
+
 // Switches the loaded branchData/index to branchId, fetching if needed,
 // and updates the title so it stays in sync whenever a chain walk crosses
 // into a different branch mid-flow.
@@ -1188,7 +1217,22 @@ async function renderChainFrom(startBranchId, startDentryId) {
     }
 
     const opts = resolveNextOptions(dentryId, activeCheckFlag);
-    if (opts.length !== 1) { finalOptions = opts; break; }  // dead end, or a real choice - stop here
+    if (opts.length !== 1) {
+      // A genuine fork (or dead end) - stop here. But first, if every
+      // option shares the same passive-check prefix (see
+      // commonPassThroughPrefix), that prefix is real content that was
+      // never actually stopped at on its own - render it now, in order,
+      // instead of leaving it to bleed into the option buttons below (see
+      // renderOptions' passThroughHtml, which is now just a fallback for
+      // the disagreeing-prefix case this can't resolve).
+      const prefix = commonPassThroughPrefix(opts);
+      for (const pt of prefix) {
+        const ptEntry = entriesById[pt.dentryId];
+        if (ptEntry) collected.push({ branchId: currentBranchId, entry: ptEntry, conditions: pt.conditions || [] });
+      }
+      finalOptions = prefix.length ? opts.map(o => ({ ...o, passThrough: [] })) : opts;
+      break;
+    }
 
     const only = opts[0];
     // If a passive check was transparently walked through to reach this
