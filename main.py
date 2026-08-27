@@ -2,7 +2,7 @@
 elysia - a searchable database of Disco Elysium dialogue lines.
 
 Database is the real source schema (mirrored 1:1) - see readme.md for
-provenance. The working db at mountpoint/DiscoElysium.db is a copy of the
+provenance. The working db at db/DiscoElysium.db is a copy of the
 imported source file; nothing here writes to it. Grab a copy of it
 yourself via GET /database/download.
 
@@ -40,16 +40,18 @@ All queries are read-only and parametrized (no raw string interpolation of
 user input).
 """
 
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 import re
 import shutil
+import asyncio
 import sqlite3
 import time
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, PlainTextResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -72,6 +74,11 @@ def load_config() -> dict:
             "default": "20/minute",
             "database_download": "5/7 days",
             "optimizer_download": "5/7 days",
+        },
+        "audio_playback": {
+            "per_minute_limit": 12,
+            "ban_after_per_hour": 600,
+            "ban_duration_seconds": 3600,
         },
         "update_check": {"enabled": True, "github_repo": "arda-y/elysia"},
         "telemetry": {"enabled": False},
@@ -131,10 +138,10 @@ def get_docker_gateway_ip() -> str | None:
 # file a self-hoster substituted, malformed cells and all - "protect the
 # original file, even if it's malformed" was arda's explicit call
 # (2026-08-25), not an oversight.
-DATABASE_URL = "sqlite+aiosqlite:///./mountpoint/OptimizedDE.db"
-SEARCH_DATABASE_URL = "sqlite+aiosqlite:///./mountpoint/OptimizedDE.db"
-_SOURCE_DB_PATH = Path("mountpoint/DiscoElysium.db")
-_OPTIMIZED_DB_PATH = Path("mountpoint/OptimizedDE.db")
+DATABASE_URL = "sqlite+aiosqlite:///./db/OptimizedDE.db"
+SEARCH_DATABASE_URL = "sqlite+aiosqlite:///./db/OptimizedDE.db"
+_SOURCE_DB_PATH = Path("db/DiscoElysium.db")
+_OPTIMIZED_DB_PATH = Path("db/OptimizedDE.db")
 
 
 # Every column the source schema declares as a numeric/boolean type
@@ -582,7 +589,7 @@ def _weld_disconnected_hubs(conn: sqlite3.Connection) -> None:
 
 
 def ensure_optimized_db() -> None:
-    """Builds mountpoint/OptimizedDE.db from mountpoint/DiscoElysium.db if
+    """Builds db/OptimizedDE.db from db/DiscoElysium.db if
     it doesn't already exist. Deliberately NOT committed to the repo (it's
     a large, fully reproducible derived artifact, not source data) and
     deliberately rebuilt from whatever DiscoElysium.db is actually present
@@ -681,7 +688,7 @@ async def send_telemetry_ping() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # ignore: unused-argument
-    # No table creation here on purpose - mountpoint/DiscoElysium.db is a
+    # No table creation here on purpose - db/DiscoElysium.db is a
     # copy of the imported source database, not something this app builds.
     async with engine.connect() as conn:
         result = await conn.execute(text("SELECT COUNT(*) FROM dentries"))
@@ -732,6 +739,185 @@ async def add_timing_header(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Query-Time-Ms"] = f"{(time.perf_counter() - start) * 1000:.1f}"
     return response
+
+
+# Voice-line playback (v2.0.0). Public, on the normal port/domain like
+# everything else - a loopback-only port (the original design) would
+# have kept it safe from mass scraping too, but it also made playback
+# impossible for anyone except arda on the box itself, which defeats the
+# point of a feature real visitors are meant to use. Scraping resistance
+# instead comes from _check_audio_rate_limit below: a per-minute throttle
+# no real listener would ever notice, plus a much coarser per-hour
+# tripwire that outright bans an IP for an hour once tripped - see
+# config.yaml's audio_playback section for the actual numbers (arda,
+# 2026-08-27).
+_VOICE_DB_PATH = Path("db/voice_archive.db")
+
+
+def _load_voiced_actor_names() -> frozenset[str]:
+    """Every actor name with at least one matched voice line anywhere in
+    voice_archive.db - used by _build_entry to decide whether a line's
+    play button should render at all, not just whether *this exact*
+    dentry has audio.
+
+    Why per-actor rather than per-dentry (arda, 2026-08-27): "You" (the
+    player) alone accounts for 23,475 real dialogue lines with zero
+    voice-over - the game was never going to record VO for player
+    choices - plus another ~230 lines spread across 33 minor background
+    NPCs (crowd scabs, unnamed strikers, ...) who likewise have no VO at
+    all. Checking "does this actor ever have a voice line" up front (one
+    query, at startup) kills the button for all of those in one go,
+    instead of a per-dentry existence check that would either cost an
+    extra round trip per line or bloat every /branches/{id} response.
+    The trade-off: an actor who mostly has VO but is missing it on one
+    specific rare line still shows a button that turns out to be a dead
+    click - acceptably rare, and still handled gracefully client-side
+    (see playVoiceLine's 404 path)."""
+    if not _VOICE_DB_PATH.exists():
+        return frozenset()
+    conn = sqlite3.connect(_VOICE_DB_PATH)
+    try:
+        return frozenset(
+            row[0] for row in conn.execute("SELECT DISTINCT actor FROM voice_files WHERE matched = 1")
+        )
+    finally:
+        conn.close()
+
+
+VOICED_ACTOR_NAMES = _load_voiced_actor_names()
+print(f"Voice archive: {len(VOICED_ACTOR_NAMES)} actors have at least one voiced line", flush=True)
+_AUDIO_CFG = CONFIG["audio_playback"]
+_AUDIO_LOG_DIR = Path("logs")
+_AUDIO_REQUEST_LOG = _AUDIO_LOG_DIR / "audio_requests.log"  # pruned to the last 24h on every write
+_AUDIO_BAN_LOG = _AUDIO_LOG_DIR / "audio_bans.log"  # kept forever - rare, worth a permanent record
+
+# ip -> deque of unix timestamps, oldest first, pruned to the last hour
+# on each request - the per-minute check below is just this same deque's
+# last-60-seconds slice, no separate structure needed.
+_audio_hits: dict[str, deque] = defaultdict(deque)
+# ip -> unix timestamp the ban lifts at (absent/expired = not banned)
+_audio_banned_until: dict[str, float] = {}
+
+
+def _log_audio_line(path: Path, line: str) -> None:
+    # Best-effort - a logging failure (e.g. the bind mount missing) should
+    # never take playback down with it.
+    try:
+        _AUDIO_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        print(f"WARNING: could not write to {path}: {e}", flush=True)
+
+
+def _prune_request_log() -> None:
+    """Keeps _AUDIO_REQUEST_LOG to roughly the last 24h - rewritten in
+    place each call rather than tracked in memory, since the point of
+    this file is surviving a container restart, not runtime speed (one
+    audio request every few seconds at most, per _AUDIO_CFG's own
+    per-minute cap)."""
+    if not _AUDIO_REQUEST_LOG.exists():
+        return
+    cutoff = time.time() - 86400
+    try:
+        lines = _AUDIO_REQUEST_LOG.read_text(encoding="utf-8").splitlines()
+        kept = [ln for ln in lines if _line_epoch(ln) is None or _line_epoch(ln) >= cutoff]
+        if len(kept) != len(lines):
+            _AUDIO_REQUEST_LOG.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    except OSError as e:
+        print(f"WARNING: could not prune {_AUDIO_REQUEST_LOG}: {e}", flush=True)
+
+
+def _line_epoch(line: str) -> float | None:
+    # Every logged line starts with "<epoch> ..." - see _log_audio_line
+    # callers below. Malformed/foreign lines are kept rather than dropped
+    # (fails safe - never silently loses a line it doesn't understand).
+    try:
+        return float(line.split(" ", 1)[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _check_audio_rate_limit(ip: str) -> tuple[bool, str | None]:
+    """Returns (allowed, block_reason). block_reason is None when allowed,
+    else one of "banned" (already serving a ban), "just_banned" (this
+    request is the one that tripped it), or "minute_limit" (ordinary
+    per-minute throttle, no ban). Every attempt updates the hourly window
+    regardless of outcome - a request the per-minute throttle turns away
+    still counts toward the hourly ban threshold, otherwise someone could
+    stay just under the per-minute cap forever without ever tripping it."""
+    now = time.time()
+
+    ban_until = _audio_banned_until.get(ip)
+    if ban_until is not None:
+        if now < ban_until:
+            return False, "banned"
+        del _audio_banned_until[ip]  # ban expired
+
+    hits = _audio_hits[ip]
+    hits.append(now)
+    while hits and now - hits[0] > 3600:
+        hits.popleft()
+
+    if len(hits) > _AUDIO_CFG["ban_after_per_hour"]:
+        _audio_banned_until[ip] = now + _AUDIO_CFG["ban_duration_seconds"]
+        _log_audio_line(_AUDIO_BAN_LOG, f"{now:.0f} BAN ip={ip} hits_in_window={len(hits)}")
+        return False, "just_banned"
+
+    last_minute = sum(1 for t in hits if now - t <= 60)
+    if last_minute > _AUDIO_CFG["per_minute_limit"]:
+        return False, "minute_limit"
+
+    return True, None
+
+
+def _voice_row(branch_id: int, dentry_id: int):
+    if not _VOICE_DB_PATH.exists():
+        return None
+    # Plain sqlite3 in a thread (via asyncio.to_thread below), not the
+    # async engines above - a single indexed point lookup
+    # (idx_voice_branch_dentry) isn't worth a second async engine +
+    # connection pool for what both DBs it'd otherwise share are already
+    # serving fine.
+    conn = sqlite3.connect(_VOICE_DB_PATH)
+    try:
+        return conn.execute(
+            "SELECT data FROM voice_files WHERE branch_id = ? AND dentry_id = ? AND matched = 1 AND alt_index IS NULL LIMIT 1",
+            (branch_id, dentry_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+@app.get("/audio/{branch_id}/{dentry_id}")
+async def get_voice_line(request: Request, branch_id: int, dentry_id: int):
+    ip = get_remote_address(request)
+    allowed, reason = _check_audio_rate_limit(ip)
+    _log_audio_line(_AUDIO_REQUEST_LOG, f"{time.time():.0f} ip={ip} branch={branch_id} dentry={dentry_id} blocked={reason or '-'}")
+    _prune_request_log()
+
+    if not allowed:
+        if reason in ("banned", "just_banned"):
+            raise HTTPException(
+                status_code=429,
+                detail="scraping detected - this IP is temporarily blocked for 1 hour",
+            )
+        raise HTTPException(status_code=429, detail="too many voice-line requests - slow down")
+
+    row = await asyncio.to_thread(_voice_row, branch_id, dentry_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="no voice line for this dentry")
+
+    return Response(
+        content=row[0],
+        media_type="audio/ogg",
+        # This exact (branch_id, dentry_id) will only ever resolve to this
+        # exact audio - voice_archive.db is static, rebuilt wholesale, not
+        # edited in place - so a long, immutable cache is safe: once a
+        # browser has played a line, clicking it again never hits this
+        # endpoint (or the per-IP counters above) a second time.
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/")
@@ -1166,6 +1352,7 @@ def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
         "text": row.dialoguetext,
         "is_system": is_system,
         "is_player_choice": row.actor == 387,  # "You" - see actors table
+        "has_voice_actor": row.speaker in VOICED_ACTOR_NAMES,
         "condition": condition,
         "effect": effect,
         "check": check,
@@ -1646,7 +1833,7 @@ async def download_database(request: Request):
     on the fly. Deliberately much stricter than every other endpoint here
     (5/week vs 20/minute) - it's a ~23MB file, not a cheap query."""
     return FileResponse(
-        "mountpoint/DiscoElysium.db",
+        "db/DiscoElysium.db",
         media_type="application/x-sqlite3",
         filename="DiscoElysium.db",
     )
@@ -1665,7 +1852,7 @@ async def download_optimizer_sql(request: Request):
     still a real file, not a cheap query - same rate limit as the
     database download for the same reason."""
     return FileResponse(
-        "OptimizedDE.sql",
+        "misc/OptimizedDE.sql",
         media_type="application/sql",
         filename="OptimizedDE.sql",
     )

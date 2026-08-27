@@ -46,7 +46,7 @@ skill checks, modifiers, conditional line variants, all present).
 
 The bundled dataset is a third-party Chat Mapper export of Disco
 Elysium's dialogue (a `.db` file dated 2021-03-29), not authored by this
-project. It's baked into the image at `mountpoint/DiscoElysium.db` (no
+project. It's baked into the image at `db/DiscoElysium.db` (no
 volume - there's nothing here that's ever written at runtime, so nothing
 needs to persist outside the container). You can:
 
@@ -54,7 +54,7 @@ needs to persist outside the container). You can:
   /database/download`, or
 - substitute your own compatible SQLite file at that same repo path
   *before building the image*, if you have a different/updated export.
-  The search index (`mountpoint/OptimizedDE.db`) rebuilds itself
+  The search index (`db/OptimizedDE.db`) rebuilds itself
   automatically on first startup from whatever `DiscoElysium.db` is
   actually present, so it can never go stale against a substituted file.
 
@@ -78,15 +78,20 @@ real content, and removing a handful of confirmed decommissioned
 duplicate lines. See `main.py`'s `ensure_optimized_db()` for the full,
 current list and the reasoning behind each one.
 
-**`OptimizedDE.sql`** (committed, ~80KB) applies the exact same fixes in
-one pass of plain SQL, for anyone who wants the optimized database
-without running this project at all - no Docker, no Python, just
-`sqlite3`:
+**`misc/OptimizedDE.sql`** (committed, ~80KB - also the exact file `GET
+/optimizer/download` serves) applies the exact same fixes in one pass of
+plain SQL, for anyone who wants the optimized database without running
+this project at all - no Docker, no Python, just `sqlite3` (paths below
+assume you've downloaded both files fresh, not a repo checkout):
 
 ```sh
 cp DiscoElysium.db OptimizedDE.db
 sqlite3 OptimizedDE.db < OptimizedDE.sql
 ```
+
+`misc/gen_optimized_sql.py` regenerates `OptimizedDE.sql` itself from
+`misc/weld_dump.json` (the baked-in graph-walk result mentioned below) -
+dev tooling, not something a normal run of this project ever touches.
 
 The graph-derived fixes (which branches got welded, which dentries got
 removed) were computed once by actually walking the whole dialogue graph

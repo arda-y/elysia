@@ -13,6 +13,18 @@ rate_limits:
   database_download: "5/7 days"
   optimizer_download: "5/7 days"
 
+# GET /audio/{branch_id}/{dentry_id} (v2.0.0, voice-line playback) - kept
+# out of the shared `default` limit above and out of the slowapi/`limits`
+# library entirely, since it needs its own two-tier shape those can't
+# express in one rule: a per-minute throttle a real listener never
+# notices, plus a much coarser per-hour tripwire that bans an IP outright
+# once tripped (see main.py's _check_audio_rate_limit). Both windows count
+# every attempt, including ones the per-minute throttle already turned away.
+audio_playback:
+  per_minute_limit: 12
+  ban_after_per_hour: 600
+  ban_duration_seconds: 3600
+
 # Compares this deployment's version.txt against the same file on GitHub's
 # main branch and shows a small notice in the frontend if they differ.
 # No data leaves the browser for this - it's a plain client-side fetch of

@@ -3,6 +3,11 @@
 # the one exception: the seed database this project actually needs to run -
 # without it, a fresh clone starts with an empty db and the app fails to
 # boot (lifespan check queries a table that doesn't exist yet).
-!mountpoint/DiscoElysium.db
+!db/DiscoElysium.db
 __pycache__
 test*
+# GET /audio's per-IP request/ban log (main.py) - runtime data, bind-
+# mounted from the host, not source. The directory itself still needs to
+# exist for the bind mount - see docker-compose.yml.
+logs/*
+!logs/.gitkeep

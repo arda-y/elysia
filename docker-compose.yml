@@ -6,3 +6,18 @@ services:
     restart: always
     ports:
       - "127.0.0.1:2005:2005"
+    volumes:
+      # Read-only, and still bind-mounted rather than baked into the image
+      # via the Dockerfile's own COPY, even though it now lives in this
+      # project's own db/ - a rebuild still shouldn't have to re-copy 3GB
+      # into a fresh image layer every time, and regenerating this file
+      # (see de-voice-extract's build_voice_db.py, while that project
+      # still exists) should take effect on a container restart alone,
+      # no rebuild needed.
+      - /home/arda/projects/elysia/db/voice_archive.db:/app/db/voice_archive.db:ro
+      # GET /audio's own per-IP request/ban log - a real host directory
+      # (not baked into the image) so it survives every rebuild/restart,
+      # for after-the-fact scraping diagnosis. arda's own uid (1000)
+      # already matches the container's appuser, so no extra chmod is
+      # needed for the container to write into it.
+      - /home/arda/projects/elysia/logs:/app/logs

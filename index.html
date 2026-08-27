@@ -58,7 +58,16 @@
     display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem; margin: 0.3rem 0;
     border-radius: 3px; background: #eef; border: 1px solid #99c;
   }
-  #explorer .text, #line-detail .text { margin-top: 0.3rem; white-space: pre-wrap; }
+  #explorer .text, #line-detail .text {
+    margin-top: 0.3rem; white-space: pre-wrap;
+    display: flex; align-items: baseline; gap: 0.5rem;
+  }
+  #explorer .voice-play-btn, #line-detail .voice-play-btn {
+    flex-shrink: 0; border: 1px solid #99c; background: #eef; color: #1a5fb4;
+    border-radius: 50%; width: 1.5rem; height: 1.5rem; line-height: 1;
+    font-size: 0.7rem; cursor: pointer; padding: 0;
+  }
+  #explorer .voice-play-btn:disabled, #line-detail .voice-play-btn:disabled { opacity: 0.5; cursor: default; }
   #explorer .alts, #line-detail .alts { font-size: 0.8rem; color: #555; margin-top: 0.4rem; }
   #explorer .condition, #line-detail .condition {
     font-size: 0.75rem; color: #555; margin-top: 0.3rem;
@@ -244,60 +253,42 @@ function skillOrPlain(name) {
 }
 
 let cachedCharacters = null;
-async function getCharacters() {
-  if (cachedCharacters) return cachedCharacters;
-  const res = await fetch("characters");
-  cachedCharacters = await res.json();
-  return cachedCharacters;
+// Same shape three times over (fetch once, cache forever, populate a
+// <select>'s options) - collapsed into one cache + one option-appender
+// shared by all three, rather than three near-identical fetch/populate
+// pairs. External call sites (populateCharacterSelect/populateEffectSelect/
+// populateCheckFilters) are untouched - only the duplication behind them
+// is gone.
+const _cachedFetches = {};
+async function cachedFetch(key, url) {
+  if (!(key in _cachedFetches)) {
+    const res = await fetch(url);
+    _cachedFetches[key] = await res.json();
+  }
+  return _cachedFetches[key];
 }
-async function populateCharacterSelect(selectEl) {
-  const chars = await getCharacters();
-  for (const c of chars) {
+function appendOptions(selectEl, items, toValueLabel) {
+  for (const item of items) {
+    const [value, label] = toValueLabel(item);
     const opt = document.createElement("option");
-    opt.value = c.name;
-    opt.textContent = c.name;
+    opt.value = value;
+    opt.textContent = label;
     selectEl.appendChild(opt);
   }
 }
 
-let cachedEffects = null;
-async function getEffects() {
-  if (cachedEffects) return cachedEffects;
-  const res = await fetch("effects");
-  cachedEffects = await res.json();
-  return cachedEffects;
+async function populateCharacterSelect(selectEl) {
+  const chars = await cachedFetch("characters", "characters");
+  appendOptions(selectEl, chars, (c) => [c.name, c.name]);
 }
 async function populateEffectSelect(selectEl) {
-  const effects = await getEffects();
-  for (const e of effects) {
-    const opt = document.createElement("option");
-    opt.value = e.name;
-    opt.textContent = `${e.name} (${e.count})`;
-    selectEl.appendChild(opt);
-  }
-}
-
-let cachedChecksMeta = null;
-async function getChecksMeta() {
-  if (cachedChecksMeta) return cachedChecksMeta;
-  const res = await fetch("checks/meta");
-  cachedChecksMeta = await res.json();
-  return cachedChecksMeta;
+  const effects = await cachedFetch("effects", "effects");
+  appendOptions(selectEl, effects, (e) => [e.name, `${e.name} (${e.count})`]);
 }
 async function populateCheckFilters(skillSelectEl, difficultySelectEl) {
-  const meta = await getChecksMeta();
-  for (const s of meta.skills) {
-    const opt = document.createElement("option");
-    opt.value = s;
-    opt.textContent = s;
-    skillSelectEl.appendChild(opt);
-  }
-  for (const d of meta.difficulty_targets) {
-    const opt = document.createElement("option");
-    opt.value = d;
-    opt.textContent = d;
-    difficultySelectEl.appendChild(opt);
-  }
+  const meta = await cachedFetch("checksMeta", "checks/meta");
+  appendOptions(skillSelectEl, meta.skills, (s) => [s, s]);
+  appendOptions(difficultySelectEl, meta.difficulty_targets, (d) => [d, d]);
 }
 
 // --- router ------------------------------------------------------------
@@ -379,6 +370,9 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "2.0.0", changes: [
+    "Added voice-line playback - a small play button next to any line that has one",
+  ]},
   { version: "1.3.3", changes: [
     "Fixed the previous passive-check fix not covering every case - when only some of a fork's branches pick up an extra passive check partway through (not all of them), the ones they DO share in common now still render properly instead of falling back to the old duplicate/bleeding display",
     "Fixed a passive check that itself leads straight into a further real fork - its downstream options were showing up as if they belonged to the check's own position, wearing its difficulty badge without ever showing its actual line, and picking one silently walked through the check again anyway",
@@ -648,19 +642,43 @@ function paginationHtml(data, buildParams) {
   `;
 }
 
-async function runSearchLines(q, character, index) {
-  const out = document.getElementById("search-results");
-  out.textContent = "searching...";
+// Shared by all 5 search types below - fetch, error-handling, the
+// results-list/pagination/query-time assembly, and the loading-state
+// text were previously copy-pasted 5 times (with small inconsistencies,
+// e.g. "searching..." vs "loading..." depending which one you were
+// reading) - collapsed here into one engine, leaving each search type to
+// specify only what actually differs: its endpoint, its own param rules
+// (see each spec below - "always" keys are set even when falsy, e.g.
+// index=0; "optional" ones only when truthy, matching each search's own
+// old `if (x) usp.set(...)` pattern), and its one render-item callback.
+function buildSearchParams({ always = {}, optional = {} }) {
   const usp = new URLSearchParams();
-  if (q) usp.set("q", q);
-  if (character) usp.set("character", character);
-  usp.set("index", index);
+  for (const [k, v] of Object.entries(always)) usp.set(k, v);
+  for (const [k, v] of Object.entries(optional)) if (v) usp.set(k, v);
+  return usp;
+}
+
+async function runSearch({ endpoint, params, viewParams, loadingText, renderItem }) {
+  const out = document.getElementById("search-results");
+  out.textContent = loadingText;
   try {
-    const res = await fetch("search/lines?" + usp.toString());
+    const res = await fetch(`${endpoint}?${params.toString()}`);
     if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
     const data = await res.json();
-    const list = data.results.length
-      ? data.results.map(l => `
+    const list = data.results.length ? data.results.map(renderItem).join("") : "no results.";
+    out.innerHTML = list + paginationHtml(data, viewParams) + queryTimeHtml(res);
+  } catch (e) {
+    out.textContent = "request failed: " + e;
+  }
+}
+
+function runSearchLines(q, character, index) {
+  return runSearch({
+    endpoint: "search/lines",
+    params: buildSearchParams({ always: { index }, optional: { q, character } }),
+    viewParams: (i) => ({ view: "search-lines", q, character, index: i }),
+    loadingText: "searching...",
+    renderItem: (l) => `
           <div class="result-item">
             <div class="meta">
               [${l.branch_id}/${l.dentry_id}] ${skillOrPlain(l.speaker || "?")}
@@ -669,23 +687,17 @@ async function runSearchLines(q, character, index) {
             </div>
             <div>${escapeHtml(l.text)}</div>
           </div>
-        `).join("")
-      : "no results.";
-    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-lines", q, character, index: i })) + queryTimeHtml(res);
-  } catch (e) {
-    out.textContent = "request failed: " + e;
-  }
+        `,
+  });
 }
 
-async function runSearchBranches(title, index) {
-  const out = document.getElementById("search-results");
-  out.textContent = "searching...";
-  try {
-    const res = await fetch("search/branches?" + new URLSearchParams({ title, index }).toString());
-    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
-    const data = await res.json();
-    const list = data.results.length
-      ? data.results.map(b => `
+function runSearchBranches(title, index) {
+  return runSearch({
+    endpoint: "search/branches",
+    params: buildSearchParams({ always: { title, index } }),
+    viewParams: (i) => ({ view: "search-branches", title, index: i }),
+    loadingText: "searching...",
+    renderItem: (b) => `
           <div class="result-item">
             <div class="meta">
               [branch ${b.branch_id}]
@@ -694,31 +706,23 @@ async function runSearchBranches(title, index) {
             <div><strong>${escapeHtml(b.title || "(untitled)")}</strong></div>
             ${b.description ? `<div class="meta">${escapeHtml(b.description)}</div>` : ""}
           </div>
-        `).join("")
-      : "no results.";
-    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-branches", title, index: i })) + queryTimeHtml(res);
-  } catch (e) {
-    out.textContent = "request failed: " + e;
-  }
+        `,
+  });
 }
 
-async function runSearchOrbs(q, index) {
-  const out = document.getElementById("search-results");
-  out.textContent = "loading...";
-  try {
-    const usp = new URLSearchParams({ index });
-    if (q) usp.set("q", q);
-    const res = await fetch("search/orbs?" + usp.toString());
-    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
-    const data = await res.json();
-    // Most ORBs (671 of 781, checked) have no real dentries at all - their
-    // entire content is the description field. Sending those into the full
-    // branch explorer just shows "end of visible branch content" with no
-    // explanation, so they get a standalone view instead (same idea as a
-    // line page) plus a direct copyable link, rather than an "open branch"
-    // button leading nowhere.
-    const list = data.results.length
-      ? data.results.map(b => `
+// Most ORBs (671 of 781, checked) have no real dentries at all - their
+// entire content is the description field. Sending those into the full
+// branch explorer just shows "end of visible branch content" with no
+// explanation, so they get a standalone view instead (same idea as a
+// line page) plus a direct copyable link, rather than an "open branch"
+// button leading nowhere.
+function runSearchOrbs(q, index) {
+  return runSearch({
+    endpoint: "search/orbs",
+    params: buildSearchParams({ always: { index }, optional: { q } }),
+    viewParams: (i) => ({ view: "search-orbs", q, index: i }),
+    loadingText: "loading...",
+    renderItem: (b) => `
           <div class="result-item">
             <div class="meta">
               [branch ${b.branch_id}]
@@ -731,23 +735,17 @@ async function runSearchOrbs(q, index) {
             <div><strong>${escapeHtml(b.title || "(untitled)")}</strong></div>
             ${b.description ? `<div class="meta">${escapeHtml(b.description)}</div>` : ""}
           </div>
-        `).join("")
-      : "no results.";
-    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-orbs", q, index: i })) + queryTimeHtml(res);
-  } catch (e) {
-    out.textContent = "request failed: " + e;
-  }
+        `,
+  });
 }
 
-async function runSearchEffects(effect, index) {
-  const out = document.getElementById("search-results");
-  out.textContent = "searching...";
-  try {
-    const res = await fetch("search/effects?" + new URLSearchParams({ effect, index }).toString());
-    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
-    const data = await res.json();
-    const list = data.results.length
-      ? data.results.map(l => `
+function runSearchEffects(effect, index) {
+  return runSearch({
+    endpoint: "search/effects",
+    params: buildSearchParams({ always: { effect, index } }),
+    viewParams: (i) => ({ view: "search-effects", effect, index: i }),
+    loadingText: "searching...",
+    renderItem: (l) => `
           <div class="result-item">
             <div class="meta">
               [${l.branch_id}/${l.dentry_id}] ${skillOrPlain(l.speaker || "?")}
@@ -757,39 +755,29 @@ async function runSearchEffects(effect, index) {
             ${l.text ? `<div>${escapeHtml(l.text)}</div>` : ""}
             <div class="effect">effect: <code>${escapeHtml(l.effect)}</code></div>
           </div>
-        `).join("")
-      : "no results.";
-    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-effects", effect, index: i })) + queryTimeHtml(res);
-  } catch (e) {
-    out.textContent = "request failed: " + e;
-  }
+        `,
+  });
 }
 
-async function runSearchChecks(type, skill, difficulty_target, index) {
-  const out = document.getElementById("search-results");
-  out.textContent = "loading...";
+// The check's own skill/difficulty is the point of this list - given a
+// heading of its own, above the branch meta line. No "check" wording and
+// no separate skill mention in the badge - the heading already names the
+// skill, and every result here is a check by definition, so spelling
+// that out again is just noise. The speaker is dropped entirely rather
+// than shown-and-redundant: every one of the 235 real checks is spoken
+// by actor 387 "You" (confirmed, not assumed - this is a player-initiated
+// check by definition, there's no other kind in this table), so it never
+// varies and never adds information. Card background also carries the
+// RED/WHITE distinction, not just the small badge - meant to be readable
+// at a glance scrolling a long list, not just on close inspection.
+function runSearchChecks(type, skill, difficulty_target, index) {
   type = type || "all";
-  try {
-    const usp = new URLSearchParams({ type, index });
-    if (skill) usp.set("skill", skill);
-    if (difficulty_target) usp.set("difficulty_target", difficulty_target);
-    const res = await fetch("search/checks?" + usp.toString());
-    if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
-    const data = await res.json();
-    // The check's own skill/difficulty is the point of this list - given a
-    // heading of its own, above the branch meta line. No "check" wording
-    // and no separate skill mention in the badge - the heading already
-    // names the skill, and every result here is a check by definition, so
-    // spelling that out again is just noise. The speaker is dropped
-    // entirely rather than shown-and-redundant: every one of the 235 real
-    // checks is spoken by actor 387 "You" (confirmed, not assumed - this
-    // is a player-initiated check by definition, there's no other kind in
-    // this table), so it never varies and never adds information. Card
-    // background also carries the RED/WHITE distinction, not just the
-    // small badge - meant to be readable at a glance scrolling a long
-    // list, not just on close inspection.
-    const list = data.results.length
-      ? data.results.map(c => `
+  return runSearch({
+    endpoint: "search/checks",
+    params: buildSearchParams({ always: { type, index }, optional: { skill, difficulty_target } }),
+    viewParams: (i) => ({ view: "search-checks", type, skill, difficulty_target, index: i }),
+    loadingText: "loading...",
+    renderItem: (c) => `
           <div class="result-item check-result ${c.is_red ? "red" : "white"}">
             <div class="check-skill">
               ${skillOrPlain(c.skill)}
@@ -802,12 +790,8 @@ async function runSearchChecks(type, skill, difficulty_target, index) {
             </div>
             ${c.text ? `<div>${escapeHtml(c.text)}</div>` : ""}
           </div>
-        `).join("")
-      : "no results.";
-    out.innerHTML = list + paginationHtml(data, (i) => ({ view: "search-checks", type, skill, difficulty_target, index: i })) + queryTimeHtml(res);
-  } catch (e) {
-    out.textContent = "request failed: " + e;
-  }
+        `,
+  });
 }
 
 // --- line detail page --------------------------------------------------------
@@ -1126,6 +1110,47 @@ function passiveCheckBadgeHtml(pc) {
   return `<div class="passive-check">passive check &middot; requires ${skillOrPlain(pc.skill)} ${label} to trigger</div>`;
 }
 
+// v2.0.0 - plays a line's voice-over, if one exists, from GET
+// /audio/{branch}/{dentry} (public, same origin as everything else - see
+// main.py's own comment on why a loopback-only port was dropped in favor
+// of a per-IP rate limit + ban there instead). fetch() rather than a
+// plain <audio src> for one reason: a <audio>/<video> element's "error"
+// event carries no status code or body, so there'd be no way to tell an
+// ordinary "no voice line here" 404 apart from a 429 ban and show the
+// latter as an actual popup - fetch() is the only way to see which one
+// came back before deciding what to do.
+//
+// Repeat clicks on the same line never hit this endpoint (or count
+// against its rate limit) a second time - the response's own
+// Cache-Control header (see get_voice_line) makes the browser's ordinary
+// HTTP cache serve it straight from disk once played.
+async function playVoiceLine(branchId, dentryId, btn) {
+  btn.disabled = true;
+  const reset = () => { btn.disabled = false; };
+  try {
+    const res = await fetch(`audio/${branchId}/${dentryId}`);
+    if (res.status === 429) {
+      const body = await res.json().catch(() => ({}));
+      alert(body.detail || "Too many voice-line requests - please slow down.");
+      reset();
+      return;
+    }
+    if (!res.ok) {
+      reset();
+      btn.title = "no voice line found for this dentry";
+      return;
+    }
+    const url = URL.createObjectURL(await res.blob());
+    const audio = new Audio(url);
+    const cleanup = () => { reset(); URL.revokeObjectURL(url); };
+    audio.addEventListener("ended", cleanup);
+    audio.play().catch(cleanup);
+  } catch (e) {
+    reset();
+    btn.title = "couldn't reach the server";
+  }
+}
+
 function renderNodeHtml(entry, branchId, showCopyLink, extraConditions) {
   const copyLink = showCopyLink === false ? "" :
     `<button class="explore-btn" onclick="copyToClipboard(lineAddressUrl(${branchId}, ${entry.dentry_id}), this)">copy line address</button>`;
@@ -1175,7 +1200,19 @@ function renderNodeHtml(entry, branchId, showCopyLink, extraConditions) {
       }).join("") + `</ul>`;
     }
   }
-  html += `<div class="text">${escapeHtml(entry.text)}</div>`;
+  // v2.0.0: a play button for the voice line, if this speaker was ever
+  // voice-acted at all (has_voice_actor - see main.py's
+  // VOICED_ACTOR_NAMES) - "You" and a handful of unvoiced background NPCs
+  // never have one to begin with, so skip the button entirely rather than
+  // show a guaranteed dead click. Even so, no per-dentry lookup ahead of
+  // time - a specific line from an otherwise-voiced actor can still turn
+  // out to have no audio; that click just disables briefly and sets a
+  // title saying so (see playVoiceLine).
+  const playBtn = entry.has_voice_actor
+    ? `<button class="voice-play-btn" title="play voice line" `
+      + `onclick="playVoiceLine(${branchId}, ${entry.dentry_id}, this)">&#9654;</button>`
+    : "";
+  html += `<div class="text">${playBtn}<span>${escapeHtml(entry.text)}</span></div>`;
   if (entry.alternates.length) {
     html += `<div class="alts"><em>alternate lines:</em><ul>`
           + entry.alternates.map(a => `<li>if <code>${escapeHtml(a.condition)}</code>: ${escapeHtml(a.text)}</li>`).join("")
