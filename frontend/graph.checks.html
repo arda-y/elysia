@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>elysia frontend rewrite — graph.js checks</title>
+<style>
+  body { font: 14px/1.5 monospace; background: #111; color: #eee; padding: 2rem; }
+  .pass { color: #6f6; } .fail { color: #f66; }
+  pre { white-space: pre-wrap; margin: .25rem 0 1rem 1.5rem; color: #faa; }
+</style>
+</head>
+<body>
+<h1>graph.js checks</h1>
+<div id="out">running...</div>
+<script type="module">
+  import { runChecks } from "./graph.checks.js";
+  const out = document.getElementById("out");
+  // API lives at whatever prefix this page itself was served under (e.g.
+  // "/elysia-dev/" behind nginx) - strip this page's own path back to
+  // that prefix rather than assuming the site root.
+  const apiBase = location.href.replace(/frontend\/graph\.checks\.html.*$/, "");
+  runChecks(apiBase).then(results => {
+    out.innerHTML = results.map(r =>
+      `<div class="${r.ok ? "pass" : "fail"}">${r.ok ? "PASS" : "FAIL"} — ${r.name}</div>` +
+      (r.ok ? "" : `<pre>${r.error}</pre>`)
+    ).join("") + `<p>${results.filter(r=>r.ok).length}/${results.length} passed</p>`;
+  }).catch(e => { out.textContent = "harness error: " + e; });
+</script>
+</body>
+</html>

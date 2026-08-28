@@ -11,3 +11,7 @@ test*
 # exist for the bind mount - see docker-compose.yml.
 logs/*
 !logs/.gitkeep
+# Same idea, for elysia-dev's own separate log dir (docker-compose.yml) -
+# added with the frontend rewrite (2026-08-28).
+logs-dev/*
+!logs-dev/.gitkeep

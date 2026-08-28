@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>elysia frontend rewrite — alt-audio spot check</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; background: #16161a; color: #e6e6e6; padding: 2rem; max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 1.1rem; opacity: .7; }
+  p.note { opacity: .7; font-size: .9rem; }
+  .card { border: 1px solid #333; border-radius: 6px; padding: .8rem 1rem; margin-bottom: 1rem; }
+  .card .meta { font-size: .8rem; opacity: .55; }
+  .card .parent { margin: .4rem 0; padding-left: .6rem; border-left: 3px solid #445; }
+  .card ul { list-style: none; margin: .4rem 0 0; padding: 0; }
+  .card li { padding: .3rem 0 .3rem .6rem; border-left: 3px solid #3a5; margin-top: .3rem; }
+  button.play-btn { font: inherit; padding: .1rem .5rem; margin-right: .4rem; background: #2d3a52; border: 1px solid #445; color: inherit; border-radius: 4px; cursor: pointer; }
+  .flag { margin-top: .5rem; }
+  .flag button { font: inherit; padding: .2rem .6rem; border-radius: 4px; cursor: pointer; }
+  .flagged { border-color: #a44; background: #2a1616; }
+  #nav { position: sticky; top: 0; background: #16161a; padding: .5rem 0; display: flex; gap: .5rem; align-items: center; z-index: 1; }
+  #nav button { font: inherit; padding: .3rem .7rem; background: #2d3a52; border: 1px solid #445; color: inherit; border-radius: 4px; cursor: pointer; }
+  #summary { font-size: .85rem; opacity: .7; }
+</style>
+</head>
+<body>
+<h1>alt-audio spot check — the 250 dentries with 2+ alternates whose alt_index positional mapping isn't independently provable</h1>
+<p class="note">Each card is one dentry: the parent line, then every alternate with its own play button
+  (<code>/audio/{branch}/{dentry}/alt/{i}</code>, i = array position). Listen against the condition text and flag
+  anything where the audio obviously doesn't match the line (wrong tone, wrong topic, matches a different alternate
+  better). Flags are kept in this browser only (localStorage) — nothing sent anywhere; read them back to me directly.</p>
+<div id="nav">
+  <button id="prevBtn">&larr; prev</button>
+  <span id="pos"></span>
+  <button id="nextBtn">next &rarr;</button>
+  <span id="summary"></span>
+</div>
+<div id="out">loading…</div>
+<script type="module">
+  import { indexBranch } from "./graph.js";
+
+  const apiBase = location.href.replace(/frontend\/alt-audio-review\.html.*$/, "").replace(/\/+$/, "");
+  const PAGE_SIZE = 10;
+  const STORAGE_KEY = "elysia-alt-audio-flags";
+
+  function escapeHtml(str) {
+    return (str ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function loadFlags() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch { return {}; }
+  }
+  function saveFlags(flags) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(flags)); } catch {}
+  }
+
+  async function playVoiceLine(branchId, dentryId, altIndex, btn) {
+    btn.disabled = true;
+    try {
+      const res = await fetch(`${apiBase}/audio/${branchId}/${dentryId}/alt/${altIndex}`);
+      if (!res.ok) { btn.disabled = false; btn.title = "no recording"; return; }
+      const url = URL.createObjectURL(await res.blob());
+      const audio = new Audio(url);
+      audio.addEventListener("ended", () => { btn.disabled = false; URL.revokeObjectURL(url); });
+      audio.play().catch(() => { btn.disabled = false; });
+    } catch { btn.disabled = false; btn.title = "couldn't reach the server"; }
+  }
+
+  const candidates = await (await fetch("./alt-audio-candidates.json")).json();
+  const branchCache = new Map();
+  async function getBranch(branchId) {
+    if (!branchCache.has(branchId)) {
+      const res = await fetch(`${apiBase}/branches/${branchId}`);
+      branchCache.set(branchId, indexBranch(branchId, await res.json()));
+    }
+    return branchCache.get(branchId);
+  }
+
+  let page = 0;
+  const out = document.getElementById("out");
+  const posEl = document.getElementById("pos");
+  const summaryEl = document.getElementById("summary");
+
+  function renderSummary() {
+    const flags = loadFlags();
+    summaryEl.textContent = `${Object.keys(flags).length} flagged so far`;
+  }
+
+  async function renderPage() {
+    out.textContent = "loading…";
+    const slice = candidates.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+    const flags = loadFlags();
+    const cards = [];
+    for (const { branch, dentry } of slice) {
+      const idx = await getBranch(branch).catch(() => null);
+      const entry = idx && idx.entriesById[dentry];
+      if (!entry) { cards.push(`<div class="card">branch ${branch}/${dentry} — could not load</div>`); continue; }
+      const key = `${branch}/${dentry}`;
+      const isFlagged = !!flags[key];
+      const altsHtml = entry.alternates.map((a, i) =>
+        `<li><button class="play-btn" data-branch="${branch}" data-dentry="${dentry}" data-alt="${i}">&#9654; alt ${i}</button>` +
+        `if <code>${escapeHtml(a.condition)}</code>: ${escapeHtml(a.text)}</li>`
+      ).join("");
+      cards.push(`
+        <div class="card${isFlagged ? " flagged" : ""}" data-key="${key}">
+          <div class="meta">branch ${branch} / line ${dentry} — ${escapeHtml(entry.speaker || "?")}</div>
+          <div class="parent">${escapeHtml(entry.text)}</div>
+          <ul>${altsHtml}</ul>
+          <div class="flag">
+            <button class="flag-btn">${isFlagged ? "unflag" : "flag as mismatched"}</button>
+          </div>
+        </div>
+      `);
+    }
+    out.innerHTML = cards.join("");
+    for (const btn of out.querySelectorAll(".play-btn")) {
+      btn.onclick = () => playVoiceLine(Number(btn.dataset.branch), Number(btn.dataset.dentry), Number(btn.dataset.alt), btn);
+    }
+    for (const btn of out.querySelectorAll(".flag-btn")) {
+      btn.onclick = () => {
+        const card = btn.closest(".card");
+        const key = card.dataset.key;
+        const flags = loadFlags();
+        if (flags[key]) delete flags[key]; else flags[key] = true;
+        saveFlags(flags);
+        renderPage();
+        renderSummary();
+      };
+    }
+    posEl.textContent = `${page * PAGE_SIZE + 1}-${page * PAGE_SIZE + slice.length} of ${candidates.length}`;
+    renderSummary();
+  }
+
+  document.getElementById("prevBtn").onclick = () => { if (page > 0) { page--; renderPage(); } };
+  document.getElementById("nextBtn").onclick = () => { if ((page + 1) * PAGE_SIZE < candidates.length) { page++; renderPage(); } };
+  renderPage();
+</script>
+</body>
+</html>

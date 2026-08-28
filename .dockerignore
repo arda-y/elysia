@@ -7,11 +7,11 @@
 db/OptimizedDE.db
 # Bind-mounted at runtime (docker-compose.yml), not baked into the
 # image - it's 3GB and the whole point of the bind mount is a rebuild
-# never has to re-copy that. Missed the first time this was set up
-# (arda caught it, 2026-08-27): COPY . ./ was quietly baking it in
-# anyway since nothing here excluded it, doubling the image size for
-# nothing - the container never actually read that copy, since the
-# bind mount overlays it with identical content at startup regardless.
+# never has to re-copy that. Missed the first time this was set up:
+# COPY . ./ was quietly baking it in anyway since nothing here excluded
+# it, doubling the image size for nothing - the container never actually
+# read that copy, since the bind mount overlays it with identical
+# content at startup regardless.
 db/voice_archive.db
 .git
 __pycache__

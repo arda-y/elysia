@@ -52,7 +52,7 @@ out.append("""-- OptimizedDE.sql
 --   cp DiscoElysium.db OptimizedDE.db
 --   sqlite3 OptimizedDE.db < OptimizedDE.sql
 --
--- Why this exists as a standalone file (arda, 2026-08-25):
+-- Why this exists as a standalone file (2026-08-25):
 --   1. Lets someone reproduce the optimized/search-ready database with
 --      nothing but the sqlite3 CLI - no Docker, no Python, no dependency
 --      install, just this file and a copy of the source .db.

@@ -53,6 +53,7 @@ import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -135,8 +136,8 @@ def get_docker_gateway_ip() -> str | None:
 # coercion scattered across API code. DiscoElysium.db itself is never
 # written to by anything here and is read directly only by
 # /database/download, so a download always hands out the exact original
-# file a self-hoster substituted, malformed cells and all - "protect the
-# original file, even if it's malformed" was arda's explicit call
+# file a self-hoster substituted, malformed cells and all - protecting
+# the original file, even if it's malformed, is a deliberate design call
 # (2026-08-25), not an oversight.
 DATABASE_URL = "sqlite+aiosqlite:///./db/OptimizedDE.db"
 SEARCH_DATABASE_URL = "sqlite+aiosqlite:///./db/OptimizedDE.db"
@@ -208,8 +209,9 @@ def _normalize_numeric_columns(conn: sqlite3.Connection) -> None:
 # screen (where positive always means "helping you"). Whichever the exact
 # mechanism, the practical fix is the same: flip the sign so a positive
 # value here always means "green, helps the player," matching what a
-# person looking at this data (or the real game) would expect - arda's
-# call (2026-08-25), not something to leave "technically as extracted."
+# person looking at this data (or the real game) would expect - a
+# deliberate call (2026-08-25), not something to leave "technically as
+# extracted."
 def _invert_modifier_signs(conn: sqlite3.Connection) -> None:
     cur = conn.execute("UPDATE modifiers SET modifier = -modifier WHERE modifier IS NOT NULL")
     print(f"  inverted sign on {cur.rowcount} modifiers.modifier row(s)", flush=True)
@@ -744,13 +746,13 @@ async def add_timing_header(request: Request, call_next):
 # Voice-line playback (v2.0.0). Public, on the normal port/domain like
 # everything else - a loopback-only port (the original design) would
 # have kept it safe from mass scraping too, but it also made playback
-# impossible for anyone except arda on the box itself, which defeats the
-# point of a feature real visitors are meant to use. Scraping resistance
-# instead comes from _check_audio_rate_limit below: a per-minute throttle
-# no real listener would ever notice, plus a much coarser per-hour
-# tripwire that outright bans an IP for an hour once tripped - see
-# config.yaml's audio_playback section for the actual numbers (arda,
-# 2026-08-27).
+# impossible for anyone but whoever's logged into the box itself, which
+# defeats the point of a feature real visitors are meant to use. Scraping
+# resistance instead comes from _check_audio_rate_limit below: a
+# per-minute throttle no real listener would ever notice, plus a much
+# coarser per-hour tripwire that outright bans an IP for an hour once
+# tripped - see config.yaml's audio_playback section for the actual
+# numbers (2026-08-27).
 _VOICE_DB_PATH = Path("db/voice_archive.db")
 
 
@@ -760,7 +762,7 @@ def _load_voiced_actor_names() -> frozenset[str]:
     play button should render at all, not just whether *this exact*
     dentry has audio.
 
-    Why per-actor rather than per-dentry (arda, 2026-08-27): "You" (the
+    Why per-actor rather than per-dentry (2026-08-27): "You" (the
     player) alone accounts for 23,475 real dialogue lines with zero
     voice-over - the game was never going to record VO for player
     choices - plus another ~230 lines spread across 33 minor background
@@ -871,7 +873,7 @@ def _check_audio_rate_limit(ip: str) -> tuple[bool, str | None]:
     return True, None
 
 
-def _voice_row(branch_id: int, dentry_id: int):
+def _voice_row(branch_id: int, dentry_id: int, alt_index: int | None = None):
     if not _VOICE_DB_PATH.exists():
         return None
     # Plain sqlite3 in a thread (via asyncio.to_thread below), not the
@@ -879,21 +881,47 @@ def _voice_row(branch_id: int, dentry_id: int):
     # (idx_voice_branch_dentry) isn't worth a second async engine +
     # connection pool for what both DBs it'd otherwise share are already
     # serving fine.
+    #
+    # alt_index (2026-08-28, frontend rewrite): an alternates-table row can
+    # have its own distinct recording, separate from the parent line's -
+    # voice_files.alt_index is the 0-based ordinal embedded directly in
+    # the original game asset filename itself (e.g.
+    # "alternative-2-...-2.fsb"), not something the (now-retired)
+    # matching pipeline invented, and it's meant to line up positionally
+    # with GET /branches/{id}'s own `alternates` array (built from
+    # `SELECT ... FROM alternates WHERE conversationid=:cid AND
+    # dialogueid=...` with no ORDER BY, i.e. natural/insertion order -
+    # the same one-pass-import order the original Chat Mapper export's
+    # row order would have been preserved in). Confirmed against real
+    # data before wiring this up: every one of the 1,085 dentries with
+    # any matched alt-audio at all has an *exact* count match between its
+    # alt_index recordings and its real `alternates` rows - never a
+    # dentry with e.g. 3 texts but only 2 recordings - so there's no
+    # count-mismatch case to even worry about breaking the positional
+    # assumption. alt_index=None keeps the original behavior (the
+    # parent line's own non-alternate recording).
     conn = sqlite3.connect(_VOICE_DB_PATH)
     try:
+        if alt_index is None:
+            return conn.execute(
+                "SELECT data FROM voice_files WHERE branch_id = ? AND dentry_id = ? AND matched = 1 AND alt_index IS NULL LIMIT 1",
+                (branch_id, dentry_id),
+            ).fetchone()
         return conn.execute(
-            "SELECT data FROM voice_files WHERE branch_id = ? AND dentry_id = ? AND matched = 1 AND alt_index IS NULL LIMIT 1",
-            (branch_id, dentry_id),
+            "SELECT data FROM voice_files WHERE branch_id = ? AND dentry_id = ? AND matched = 1 AND alt_index = ? LIMIT 1",
+            (branch_id, dentry_id, alt_index),
         ).fetchone()
     finally:
         conn.close()
 
 
-@app.get("/audio/{branch_id}/{dentry_id}")
-async def get_voice_line(request: Request, branch_id: int, dentry_id: int):
+async def _serve_voice_line(request: Request, branch_id: int, dentry_id: int, alt_index: int | None):
     ip = get_remote_address(request)
     allowed, reason = _check_audio_rate_limit(ip)
-    _log_audio_line(_AUDIO_REQUEST_LOG, f"{time.time():.0f} ip={ip} branch={branch_id} dentry={dentry_id} blocked={reason or '-'}")
+    _log_audio_line(
+        _AUDIO_REQUEST_LOG,
+        f"{time.time():.0f} ip={ip} branch={branch_id} dentry={dentry_id} alt={alt_index if alt_index is not None else '-'} blocked={reason or '-'}",
+    )
     _prune_request_log()
 
     if not allowed:
@@ -904,20 +932,54 @@ async def get_voice_line(request: Request, branch_id: int, dentry_id: int):
             )
         raise HTTPException(status_code=429, detail="too many voice-line requests - slow down")
 
-    row = await asyncio.to_thread(_voice_row, branch_id, dentry_id)
+    row = await asyncio.to_thread(_voice_row, branch_id, dentry_id, alt_index)
     if not row:
         raise HTTPException(status_code=404, detail="no voice line for this dentry")
 
     return Response(
         content=row[0],
         media_type="audio/ogg",
-        # This exact (branch_id, dentry_id) will only ever resolve to this
-        # exact audio - voice_archive.db is static, rebuilt wholesale, not
-        # edited in place - so a long, immutable cache is safe: once a
-        # browser has played a line, clicking it again never hits this
-        # endpoint (or the per-IP counters above) a second time.
+        # This exact (branch_id, dentry_id[, alt_index]) will only ever
+        # resolve to this exact audio - voice_archive.db is static,
+        # rebuilt wholesale, not edited in place - so a long, immutable
+        # cache is safe: once a browser has played a line, clicking it
+        # again never hits this endpoint (or the per-IP counters above)
+        # a second time.
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
+
+
+@app.get("/audio/{branch_id}/{dentry_id}")
+async def get_voice_line(request: Request, branch_id: int, dentry_id: int):
+    return await _serve_voice_line(request, branch_id, dentry_id, alt_index=None)
+
+
+@app.get("/audio/{branch_id}/{dentry_id}/alt/{alt_index}")
+async def get_voice_line_alt(request: Request, branch_id: int, dentry_id: int, alt_index: int):
+    # alt_index here is the 0-based position within THIS dentry's own
+    # `alternates` array, as returned by GET /branches/{id} - see
+    # _voice_row's own comment for why that's expected to line up with
+    # voice_files.alt_index directly, and misc/frontend-rewrite-
+    # decisions.md for the count-verification behind trusting it for all
+    # 1,085 matched dentries, not just the single-alternate ones.
+    return await _serve_voice_line(request, branch_id, dentry_id, alt_index=alt_index)
+
+
+class _NoStoreStaticFiles(StaticFiles):
+    """Same no-store reasoning as root()'s index.html below - the frontend
+    rewrite (2026-08-28) splits JS into real files under frontend/, and a
+    plain browser cache serving a stale module after a deploy would be the
+    exact same class of bug as the v1.3.3 stale-index.html one, just for a
+    file that isn't even the top-level page a refresh normally re-fetches
+    for free."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
+app.mount("/frontend", _NoStoreStaticFiles(directory="frontend"), name="frontend")
 
 
 @app.get("/")
@@ -925,8 +987,8 @@ async def get_voice_line(request: Request, branch_id: int, dentry_id: int):
 async def root(request: Request):
     # index.html is the one file that changes on every release but was
     # otherwise cacheable by default - a plain browser refresh could keep
-    # serving a stale copy after a deploy (arda hit this after v1.3.1,
-    # only resolved by "a rebuild" clearing whatever had cached it).
+    # serving a stale copy after a deploy (hit once after v1.3.1, only
+    # resolved by "a rebuild" clearing whatever had cached it).
     # no-store forces every load to actually re-fetch.
     return FileResponse(
         "index.html",

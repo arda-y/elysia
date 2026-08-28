@@ -1,0 +1,321 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>elysia frontend rewrite — explorer demo</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; background: #16161a; color: #e6e6e6; padding: 2rem; max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.1rem; opacity: .7; }
+  .jump { margin-bottom: 1.5rem; }
+  input { font: inherit; padding: .4rem .6rem; background: #26262c; border: 1px solid #3a3a42; color: inherit; border-radius: 4px; }
+  button { font: inherit; padding: .4rem .8rem; background: #2d3a52; border: 1px solid #445; color: inherit; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #38486a; }
+  /* branch viewer */
+  #viewer .line { border-left: 3px solid #445; padding: .4rem .8rem; margin-bottom: .5rem; }
+  #viewer .line.player { border-left-color: #7a9; }
+  #viewer .meta { font-size: .75rem; opacity: .55; }
+  #viewer .badge { display: inline-block; font-size: .75rem; padding: .1rem .4rem; border-radius: 3px; margin-top: .25rem; }
+  #viewer .badge.passive { background: #4a3a1a; color: #e0b060; }
+  #viewer .badge.check { background: #3a1a1a; color: #e08080; }
+  /* options list */
+  #options { margin-top: 1rem; display: flex; flex-direction: column; gap: .4rem; }
+  #options button { text-align: left; }
+  #options .cond { font-size: .75rem; opacity: .6; }
+</style>
+</head>
+<body>
+<h1>elysia frontend rewrite — explorer demo (raw, unstyled — proving the walk/merge logic, not a final UI)</h1>
+<div class="jump">
+  branch <input id="branchInput" value="1370" size="6">
+  line <input id="atInput" value="5" size="6">
+  <button id="goBtn">go</button>
+  <button id="backBtn">&larr; back</button>
+  <span id="backStatus" style="opacity:.6; font-size:.85rem;"></span>
+</div>
+<h2 id="branchTitle" style="font-size:1rem; margin-bottom:.2rem;"></h2>
+<p id="branchDescription" style="opacity:.75; font-size:.9rem; display:none;"></p>
+<div id="viewer"></div>
+<div id="options"></div>
+<script type="module">
+  import { indexBranch, resolveChain } from "./graph.js";
+  import { resolvePrevReal } from "./back.js";
+
+  const apiBase = location.href.replace(/frontend\/explorer-demo\.html.*$/, "").replace(/\/+$/, "");
+  const viewer = document.getElementById("viewer");
+  const optionsEl = document.getElementById("options");
+  const backStatus = document.getElementById("backStatus");
+
+  let idx = null;
+
+  // graph-native "back" state - see back.js. currentAnchor* is the
+  // walk's own *start* point (set at the top of walkFrom), not wherever
+  // it stopped - "back" needs to find the predecessor of the whole
+  // flattened chain, not one step into the middle of it. backTrail
+  // accumulates only across a *consecutive* streak of back presses (any
+  // forward move - go/click/true_entry - resets it) so a real graph
+  // cycle (confirmed, e.g. 1199/236) doesn't loop "back" forever either.
+  let currentAnchorBranchId = null;
+  let currentAnchorDentryId = null;
+  let backTrail = new Set();
+
+  async function fetchPredecessors(branchId, dentryId) {
+    const res = await fetch(`${apiBase}/branches/${branchId}/lines/${dentryId}/predecessors`);
+    return res.ok ? res.json() : [];
+  }
+  async function fetchLineInfo(branchId, dentryId) {
+    const res = await fetch(`${apiBase}/branches/${branchId}/lines/${dentryId}`);
+    return res.ok ? res.json() : null;
+  }
+
+  async function goBack() {
+    const backBtn = document.getElementById("backBtn");
+    backBtn.disabled = true;
+    backStatus.textContent = "";
+    try {
+      backTrail.add(`${currentAnchorBranchId}:${currentAnchorDentryId}`);
+      const prev = await resolvePrevReal(fetchPredecessors, fetchLineInfo, currentAnchorBranchId, currentAnchorDentryId);
+      if (!prev) { backStatus.textContent = "(already at the branch's root)"; return; }
+      if (backTrail.has(`${prev.branchId}:${prev.dentryId}`)) {
+        backStatus.textContent = "(loops back on itself here - no further unique content)";
+        return;
+      }
+      await walkFrom(prev.branchId, prev.dentryId);
+    } finally {
+      backBtn.disabled = false;
+    }
+  }
+  document.getElementById("backBtn").onclick = goBack;
+
+  async function loadBranch(branchId) {
+    const res = await fetch(`${apiBase}/branches/${branchId}`);
+    if (!res.ok) throw new Error(`branches/${branchId}: ${res.status}`);
+    idx = indexBranch(branchId, await res.json());
+    // Shown once per branch load, not per walk step - dialogues.description
+    // was already in search-result listings but silently dropped once you
+    // actually opened the branch explorer. Most ORB branches (671 of 781)
+    // have NO real dentries at all - their entire content lives here - so
+    // this can't be conditional on there being anything else to show.
+    document.getElementById("branchTitle").textContent = `branch ${idx.branchId}: ${idx.title || ""}`;
+    const descEl = document.getElementById("branchDescription");
+    descEl.textContent = idx.description || "";
+    descEl.style.display = idx.description ? "" : "none";
+  }
+
+  // Every piece of text below is server-fetched game data, not literal
+  // user input - but per the cross-project convention (a real stored-XSS
+  // bug once in suncdn/ytflex/guestbook), fetched/external text is never
+  // put in the DOM via innerHTML + template literals without escaping,
+  // no exceptions for "it's probably fine this time."
+  function escapeHtml(str) {
+    return (str ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function badgeHtml(entry) {
+    if (entry.check) {
+      const modHtml = entry.check.modifiers.length
+        ? `<ul>` + entry.check.modifiers.map(m => {
+            const sign = m.value >= 0 ? "+" : "";
+            return `<li>${sign}${m.value} ${escapeHtml(m.tooltip || m.variable)}</li>`;
+          }).join("") + `</ul>`
+        : "";
+      return `<div class="badge check">${entry.check.is_red ? "RED" : "WHITE"} check · ${escapeHtml(entry.check.skill)} · ${entry.check.difficulty_target ?? "?"}${modHtml}</div>`;
+    }
+    if (entry.passive_check) {
+      return `<div class="badge passive">passive check · ${escapeHtml(entry.passive_check.skill)} ${entry.passive_check.difficulty_target ?? "?"}</div>`;
+    }
+    return "";
+  }
+
+  // playVoiceLine + play-button gating (has_voice_actor) - same mechanism
+  // as production (fetch, not <audio src>, so a 429 ban is distinguishable
+  // from an ordinary "no voice line" 404 - see main.py/index.html's own
+  // comments on why). This demo only needs the button to prove it now
+  // appears on alternates too, not a full parity audio UI.
+  async function playVoiceLine(branchId, dentryId, altIndex, btn) {
+    btn.disabled = true;
+    try {
+      const url = altIndex == null
+        ? `${apiBase}/audio/${branchId}/${dentryId}`
+        : `${apiBase}/audio/${branchId}/${dentryId}/alt/${altIndex}`;
+      const res = await fetch(url);
+      if (!res.ok) { btn.disabled = false; btn.title = res.status === 429 ? "rate limited" : "no voice line"; return; }
+      const blobUrl = URL.createObjectURL(await res.blob());
+      const audio = new Audio(blobUrl);
+      audio.addEventListener("ended", () => { btn.disabled = false; URL.revokeObjectURL(blobUrl); });
+      audio.play().catch(() => { btn.disabled = false; });
+    } catch (e) { btn.disabled = false; btn.title = "couldn't reach the server"; }
+  }
+
+  // altIndex = this alternate's own position in entry.alternates (its own
+  // recording, via /audio/.../alt/{i}) - omit/null for the parent line's
+  // own button (plain /audio/...).
+  function playButtonHtml(entry, branchId, dentryId, altIndex) {
+    if (!entry.has_voice_actor) return "";
+    const altAttr = altIndex == null ? "" : ` data-alt="${altIndex}"`;
+    return `<button class="play-btn" data-branch="${branchId}" data-dentry="${dentryId}"${altAttr} title="play voice line">&#9654;</button>`;
+  }
+
+  function wirePlayButtons(container) {
+    for (const btn of container.querySelectorAll(".play-btn")) {
+      const alt = btn.dataset.alt === undefined ? null : Number(btn.dataset.alt);
+      btn.onclick = () => playVoiceLine(Number(btn.dataset.branch), Number(btn.dataset.dentry), alt, btn);
+    }
+  }
+
+  // extraConditions = gates on an intermediate system node passed through
+  // (skipped) to reach this line - not necessarily on the line's own
+  // conditionstring. Old app called this the same thing; a real fix
+  // (an IsTHCPresent(...)-style gate living on a junction above two
+  // otherwise-identical lines) that resolveChain's `collected` now
+  // carries through instead of silently dropping.
+  function renderLine(entry, branchId, extraConditions) {
+    const div = document.createElement("div");
+    div.className = "line" + (entry.is_player_choice ? " player" : "");
+    let html = `<div class="meta">${branchId}/${entry.dentry_id} — ${escapeHtml(entry.speaker || "?")}</div>`
+      + `<div>${playButtonHtml(entry, branchId, entry.dentry_id)}${escapeHtml(entry.text)}</div>`;
+    if (entry.condition) html += `<div class="cond">shown only if <code>${escapeHtml(entry.condition)}</code></div>`;
+    if (extraConditions && extraConditions.length) {
+      html += `<div class="cond">reached only if ` + extraConditions.map(c => `<code>${escapeHtml(c)}</code>`).join(" and ") + `</div>`;
+    }
+    if (entry.effect) html += `<div class="cond">effect: <code>${escapeHtml(entry.effect)}</code></div>`;
+    html += badgeHtml(entry);
+    // Alternates never had a play button before (found this session).
+    // Each alternate now gets its OWN recording where one exists
+    // (/audio/.../alt/{i}, i = this alternate's position in the array) -
+    // see misc/frontend-rewrite-decisions.md for why that positional
+    // match is trusted. Falls back to nothing playable if this specific
+    // alternate has no matched recording (has_voice_actor only says the
+    // *actor* is voiced somewhere, not that every line/alternate has a
+    // clip - same as the parent line's own button, which can still 404).
+    if (entry.alternates.length) {
+      html += `<div class="alts"><em>alternate lines:</em><ul>` + entry.alternates.map((a, i) =>
+        `<li>${playButtonHtml(entry, branchId, entry.dentry_id, i)}if <code>${escapeHtml(a.condition)}</code>: ${escapeHtml(a.text)}</li>`
+      ).join("") + `</ul></div>`;
+    }
+    div.innerHTML = html;
+    wirePlayButtons(div);
+    viewer.appendChild(div);
+  }
+
+  async function walkFrom(branchId, dentryId) {
+    // The walk's own start point - what "back" will find the predecessor
+    // of next time it's pressed. This is NOT reset for goBack's own call
+    // into walkFrom (goBack manages currentAnchor/backTrail itself); it's
+    // only meaningful state for genuine forward moves.
+    currentAnchorBranchId = branchId;
+    currentAnchorDentryId = dentryId;
+    viewer.innerHTML = "";
+    optionsEl.innerHTML = "";
+    if (!idx || idx.branchId !== branchId) await loadBranch(branchId);
+
+    // resolveChain is pure/stateless (see graph.js) - each call here
+    // starts a genuinely fresh chain from its own anchor, which is what
+    // makes "clears between choices, doesn't accumulate" the only
+    // possible outcome rather than something this loop has to separately
+    // remember to do.
+    let currentBranchId = branchId;
+    let currentDentry = dentryId;
+    const branchesSeen = new Set(); // guards a cross-branch ping-pong loop across resolveChain calls
+    while (true) {
+      const chainKey = `${currentBranchId}:${currentDentry}`;
+      if (branchesSeen.has(chainKey)) { optionsEl.textContent = "[cycle guard hit]"; return; }
+      branchesSeen.add(chainKey);
+
+      const chain = resolveChain(idx, currentDentry);
+      for (const c of chain.collected) {
+        const entry = idx.entriesById[c.dentryId];
+        if (entry) renderLine(entry, currentBranchId, c.conditions);
+      }
+      const only = chain.options.length === 1 ? chain.options[0] : null;
+      if (only && only.type === "cross") {
+        await loadBranch(only.toBranch);
+        currentBranchId = only.toBranch;
+        currentDentry = only.toDentry;
+        continue;
+      }
+      renderOptions(chain.options, currentBranchId);
+      return;
+    }
+  }
+
+  function renderOptions(options, branchId) {
+    if (!options.length) {
+      optionsEl.innerHTML = `<em>[end of visible branch content]</em>`;
+      return;
+    }
+    optionsEl.innerHTML = "";
+    for (const o of options) {
+      const btn = document.createElement("button");
+      const condHtml = o.conditions && o.conditions.length
+        ? `<div class="cond">requires: ${o.conditions.map(c => `<code>${escapeHtml(c)}</code>`).join(" and ")}</div>` : "";
+      // Fresh render from the chosen anchor, same as the old app - NOT an
+      // accumulating transcript of the whole playthrough (a real "history
+      // so far" view would need simulated variable state to know what was
+      // actually true along the way - not attempting that yet). If a
+      // passive check got flattened through on the way here (o.via),
+      // anchor the walk at the CHECK's own position instead of the
+      // option's final destination - walkFrom/resolveChain naturally
+      // re-discovers everything downstream from there (the check
+      // collected as ordinary content, then whatever follows it), so this
+      // stays reload-safe with no separate "render this once" path.
+      const enter = async () => {
+        backTrail = new Set(); // a forward move breaks any "back" streak
+        if (o.via && o.via.length) {
+          await walkFrom(branchId, o.via[0].dentryId);
+          return;
+        }
+        const startBranch = o.type === "cross" ? o.toBranch : branchId;
+        const startDentry = o.type === "cross" ? o.toDentry : o.dentryId;
+        await walkFrom(startBranch, startDentry);
+      };
+      if (o.type === "cross") {
+        btn.innerHTML = `↱ leaves to branch ${o.toBranch}` + condHtml;
+        btn.onclick = enter;
+      } else {
+        const e = idx.entriesById[o.dentryId];
+        const preview = (e.text || "").length > 90 ? e.text.slice(0, 90) + "…" : (e.text || "");
+        btn.innerHTML = `[${branchId}/${o.dentryId}] ${escapeHtml(e.speaker || "?")}: ${escapeHtml(preview)}` + badgeHtml(e) + condHtml;
+        btn.onclick = enter;
+      }
+      optionsEl.appendChild(btn);
+    }
+  }
+
+  // Same cold-open convention as the old app: dentry 0 is the default
+  // start point, and *only* on that default (never on an explicit
+  // line/search-result/pasted-address jump) does a branch with a
+  // true_entry (its real narrative start living in a different branch
+  // entirely - confirmed on 10 branches, e.g. 616 -> 605/198) redirect
+  // to it instead of showing this branch's own dentry 0.
+  function renderTrueEntryNotice(branchId, trueEntry) {
+    optionsEl.innerHTML = "";
+    viewer.innerHTML = `<div class="line">
+      <div class="meta">branch ${branchId}</div>
+      <div>This branch's real entry point is a check in another branch —
+        ${escapeHtml(trueEntry.branch_title || `branch ${trueEntry.branch_id}`)}.</div>
+      ${trueEntry.text ? `<div class="cond">"${escapeHtml(trueEntry.text)}"</div>` : ""}
+    </div>`;
+    const goReal = document.createElement("button");
+    goReal.textContent = "go to the real entry →";
+    goReal.onclick = () => { backTrail = new Set(); walkFrom(trueEntry.branch_id, trueEntry.dentry_id); };
+    const goLocal = document.createElement("button");
+    goLocal.textContent = "browse this branch's own content anyway →";
+    goLocal.onclick = () => { backTrail = new Set(); walkFrom(branchId, 0); }; // walkFrom never itself re-checks true_entry, only this page's own "go" button does
+    optionsEl.append(goReal, goLocal);
+  }
+
+  document.getElementById("goBtn").onclick = async () => {
+    backTrail = new Set(); // a forward move breaks any "back" streak
+    const b = Number(document.getElementById("branchInput").value);
+    const a = Number(document.getElementById("atInput").value);
+    idx = null;
+    try {
+      if (a === 0) {
+        await loadBranch(b);
+        if (idx.trueEntry) { renderTrueEntryNotice(b, idx.trueEntry); return; }
+      }
+      await walkFrom(b, a);
+    } catch (e) { viewer.textContent = "error: " + e; }
+  };
+  document.getElementById("goBtn").click();
+</script>
+</body>
+</html>

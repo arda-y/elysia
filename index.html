@@ -4,6 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
+<!-- Applies any stored dark-mode override before the stylesheet even
+     paints - the main script is type="module", which (like `defer`) runs
+     after the document is parsed, so waiting for it would show a flash of
+     the wrong theme on every reload for anyone who overrode their system
+     preference. A plain classic script here runs synchronously, in order,
+     immediately. No override stored = say nothing = the CSS media query
+     alone already renders the right (system-following) theme with no JS
+     needed at all. -->
+<script>
+  try {
+    var t = localStorage.getItem("elysia-theme");
+    if (t === "light" || t === "medium" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+</script>
+
 <meta property="og:title" content="elysia">
 <meta property="og:description" content="a searchable database of Disco Elysium dialogue lines">
 <meta property="og:site_name" content="elysia">
@@ -13,22 +28,156 @@
 
 <title>elysia - a Disco Elysium database crawler</title>
 <style>
+  /* Light palette (default) - every color used below is a token here so
+     three tiers: light / medium / dark, chosen via the top-right slider,
+     persisted in data-theme. Medium and dark share every token except
+     --bg - medium is a middle-ground background, dark is the darker of
+     the two despite the name suggesting otherwise: #18181b's rgb is
+     ~(24,24,27), darker than medium's rgb(54,54,54). No explicit choice
+     = follow the OS preference (light or dark tier only - medium is
+     manual-only, there's
+     no OS-level "medium" preference to map to). */
+  :root {
+    --bg: #fafafa;
+    --bg-raised: #fff;
+    --fg: #1a1a1a;
+    --fg-muted: #666;
+    --fg-faint: #999;
+    --border: #ccc;
+    --border-strong: #999;
+    --link: #1a5fb4;
+    --accent-bg: #333;
+    --accent-fg: #fff;
+    --you: #1a5fb4;
+    --cross: #c33;
+    --success: #1a6b2e;
+    --failure: #a31212;
+    --check-white-bg: #eee;
+    --check-white-border: #999;
+    --check-red-bg: #fdd;
+    --check-red-border: #c33;
+    --check-red-fg: #900;
+    --check-result-white-bg: #fff;
+    --check-result-red-bg: #fff5f5;
+    --check-result-red-border: #e3a3a3;
+    --passive-bg: #eef;
+    --passive-border: #99c;
+    --effect-border: #b58a2e;
+    --dup-bg: #ffd54a;
+    --dup-fg: #000;
+    --code-fg: #333;
+    --input-bg: #fff;
+  }
+  /* Dark-tier tokens (shared by both "medium" and "dark" - only --bg
+     differs between them, overridden separately below each block).
+     Redefined under BOTH the media query (so an unset preference follows
+     the OS, landing on the "dark" tier specifically, never "medium") and
+     the explicit attribute (so the slider wins either direction,
+     including overriding an OS set to light). Listed per-block rather
+     than shared via a CSS mixin/nesting construct, for broad browser
+     compatibility (plain flat rules always work). */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+      --bg: #18181b;
+      --bg-raised: #232327;
+      --fg: #e8e8ea;
+      --fg-muted: #a3a3ab;
+      --fg-faint: #75757e;
+      --border: #3a3a42;
+      --border-strong: #52525b;
+      --link: #6ea8ff;
+      --accent-bg: #e8e8ea;
+      --accent-fg: #18181b;
+      --you: #6ea8ff;
+      --cross: #ff8080;
+      --success: #5fc97e;
+      --failure: #ff7a7a;
+      --check-white-bg: #2a2a30;
+      --check-white-border: #52525b;
+      --check-red-bg: #3a2020;
+      --check-red-border: #a34a4a;
+      --check-red-fg: #ff9a9a;
+      --check-result-white-bg: #232327;
+      --check-result-red-bg: #2a1e1e;
+      --check-result-red-border: #6b3939;
+      --passive-bg: #24243a;
+      --passive-border: #5a5aa0;
+      --effect-border: #c9a24a;
+      --dup-bg: #a8790a;
+      --dup-fg: #fff;
+      --code-fg: #d8d8da;
+      --input-bg: #232327;
+    }
+  }
+  :root[data-theme="medium"], :root[data-theme="dark"] {
+    --bg-raised: #232327;
+    --fg: #e8e8ea;
+    --fg-muted: #a3a3ab;
+    --fg-faint: #75757e;
+    --border: #3a3a42;
+    --border-strong: #52525b;
+    --link: #6ea8ff;
+    --accent-bg: #e8e8ea;
+    --accent-fg: #18181b;
+    --you: #6ea8ff;
+    --cross: #ff8080;
+    --success: #5fc97e;
+    --failure: #ff7a7a;
+    --check-white-bg: #2a2a30;
+    --check-white-border: #52525b;
+    --check-red-bg: #3a2020;
+    --check-red-border: #a34a4a;
+    --check-red-fg: #ff9a9a;
+    --check-result-white-bg: #232327;
+    --check-result-red-bg: #2a1e1e;
+    --check-result-red-border: #6b3939;
+    --passive-bg: #24243a;
+    --passive-border: #5a5aa0;
+    --effect-border: #c9a24a;
+    --dup-bg: #a8790a;
+    --dup-fg: #fff;
+    --code-fg: #d8d8da;
+    --input-bg: #232327;
+  }
+  :root[data-theme="medium"] { --bg: rgb(54, 54, 54); }
+  :root[data-theme="dark"] { --bg: #18181b; }
+
   * { box-sizing: border-box; }
-  body { font-family: monospace; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #fafafa; }
-  input, select, button { font-family: monospace; font-size: 0.9rem; padding: 0.3rem; max-width: 100%; }
+  body { font-family: monospace; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: var(--bg); color: var(--fg); }
+  a { color: var(--link); }
+  input, select, button { font-family: monospace; font-size: 0.9rem; padding: 0.3rem; max-width: 100%; background: var(--input-bg); color: var(--fg); border: 1px solid var(--border-strong); }
+  /* 3-position theme slider (light/medium/dark), top-right - a native
+     <input type=range min=0 max=2 step=1> rather than three separate
+     buttons, so it reads as one continuous light-to-dark control instead
+     of three unrelated toggles. */
+  #theme-slider-wrap {
+    position: fixed; top: 1rem; right: 1rem; z-index: 10;
+    display: flex; align-items: center; gap: 0.4rem;
+    background: var(--bg-raised); border: 1px solid var(--border-strong);
+    border-radius: 999px; padding: 0.3rem 0.7rem;
+  }
+  #theme-slider-wrap span { font-size: 0.9rem; line-height: 1; }
+  #theme-slider { width: 4.5rem; accent-color: var(--link); cursor: pointer; margin: 0; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
   .toolbar input[type=text] { flex: 1; min-width: 120px; }
   #home-character { max-width: 220px; }
-  .result-item { border-bottom: 1px solid #ccc; padding: 0.5rem 0; }
-  .spoiler { background: #333; color: transparent; border-radius: 3px; cursor: pointer; padding: 0 0.15em; transition: none; }
+  .result-item { border-bottom: 1px solid var(--border); padding: 0.5rem 0; }
+  .spoiler { background: var(--fg); color: transparent; border-radius: 3px; cursor: pointer; padding: 0 0.15em; transition: none; }
   .spoiler.revealed { background: transparent; color: inherit; cursor: text; }
-  .meta { color: #666; font-size: 0.8rem; }
+  .meta { color: var(--fg-muted); font-size: 0.8rem; }
   .explore-btn { margin-left: 0.5rem; font-size: 0.75rem; }
+  /* Always light text, independent of theme - ATTRIBUTE_COLOR's badge
+     backgrounds (set inline per-skill by skillOrPlain()) are fixed dark,
+     saturated colors in both light and dark mode, not theme-tracking
+     tokens - using --accent-fg here was wrong, it correctly flips to
+     near-black for dark mode's button-active state, which made every
+     skill badge unreadable (black text on e.g. dark blue/purple/red)
+     once dark mode was on. */
   .skill-badge { color: #fff; font-weight: bold; padding: 0.05rem 0.4rem; border-radius: 3px; }
   .back-link { display: inline-block; margin-bottom: 0.8rem; font-size: 0.85rem; }
 
   .mode-tabs button { padding: 0.4rem 0.7rem; }
-  .mode-tabs button.active { background: #333; color: #fff; }
+  .mode-tabs button.active { background: var(--accent-bg); color: var(--accent-fg); border-color: var(--accent-bg); }
 
   .landing-center {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -38,47 +187,47 @@
   .landing-links a { display: inline-flex; align-items: center; gap: 0.4rem; }
   .landing-links svg { width: 18px; height: 18px; flex-shrink: 0; }
   .landing-contact { display: flex; justify-content: center; align-items: center; gap: 0.8rem; font-size: 0.85rem; }
-  .landing-contact .sep { color: #ccc; }
+  .landing-contact .sep, .meta .sep { color: var(--border); }
 
-  #branchDescription { font-style: italic; color: #666; margin-top: 0.5rem; }
-  #explorer, #line-detail { border: 1px solid #ccc; padding: 1rem; margin-top: 0.5rem; }
+  #branchDescription { font-style: italic; color: var(--fg-muted); margin-top: 0.5rem; }
+  #explorer, #line-detail { border: 1px solid var(--border); padding: 1rem; margin-top: 0.5rem; background: var(--bg-raised); }
   #explorer .node, #line-detail .node { margin-bottom: 1rem; }
   #explorer .speaker, #line-detail .speaker { font-weight: bold; }
-  #explorer .you .speaker, #line-detail .you .speaker { color: #1a5fb4; }
+  #explorer .you .speaker, #line-detail .you .speaker { color: var(--you); }
   #explorer .check, #line-detail .check, #search-results .check { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem; margin: 0.3rem 0; border-radius: 3px; }
-  #explorer .check.white, #line-detail .check.white, #search-results .check.white { background: #eee; border: 1px solid #999; }
-  #explorer .check.red, #line-detail .check.red, #search-results .check.red { background: #fdd; border: 1px solid #c33; color: #900; }
+  #explorer .check.white, #line-detail .check.white, #search-results .check.white { background: var(--check-white-bg); border: 1px solid var(--check-white-border); }
+  #explorer .check.red, #line-detail .check.red, #search-results .check.red { background: var(--check-red-bg); border: 1px solid var(--check-red-border); color: var(--check-red-fg); }
   .check-result { border-radius: 8px; margin-bottom: 0.6rem; padding: 0.6rem 0.8rem; border-bottom: none; }
-  .check-result.white { background: #fff; border: 1px solid #ccc; }
-  .check-result.red { background: #fff5f5; border: 1px solid #e3a3a3; }
+  .check-result.white { background: var(--check-result-white-bg); border: 1px solid var(--border); }
+  .check-result.red { background: var(--check-result-red-bg); border: 1px solid var(--check-result-red-border); }
   .check-result .check-skill { font-weight: bold; font-size: 1.05rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.5rem; }
-  .check-result .check-req { font-weight: normal; font-size: 0.75rem; color: #777; }
-  .check-result.red .check-req { color: #a33; }
+  .check-result .check-req { font-weight: normal; font-size: 0.75rem; color: var(--fg-muted); }
+  .check-result.red .check-req { color: var(--check-red-fg); }
   #explorer .passive-check, #line-detail .passive-check {
     display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem; margin: 0.3rem 0;
-    border-radius: 3px; background: #eef; border: 1px solid #99c;
+    border-radius: 3px; background: var(--passive-bg); border: 1px solid var(--passive-border);
   }
   #explorer .text, #line-detail .text {
     margin-top: 0.3rem; white-space: pre-wrap;
     display: flex; align-items: baseline; gap: 0.5rem;
   }
   #explorer .voice-play-btn, #line-detail .voice-play-btn {
-    flex-shrink: 0; border: 1px solid #99c; background: #eef; color: #1a5fb4;
+    flex-shrink: 0; border: 1px solid var(--passive-border); background: var(--passive-bg); color: var(--you);
     border-radius: 50%; width: 1.5rem; height: 1.5rem; line-height: 1;
     font-size: 0.7rem; cursor: pointer; padding: 0;
   }
   #explorer .voice-play-btn:disabled, #line-detail .voice-play-btn:disabled { opacity: 0.5; cursor: default; }
-  #explorer .alts, #line-detail .alts { font-size: 0.8rem; color: #555; margin-top: 0.4rem; }
+  #explorer .alts, #line-detail .alts { font-size: 0.8rem; color: var(--fg-muted); margin-top: 0.4rem; }
   #explorer .condition, #line-detail .condition {
-    font-size: 0.75rem; color: #555; margin-top: 0.3rem;
-    border-left: 3px solid #999; padding-left: 0.5rem;
+    font-size: 0.75rem; color: var(--fg-muted); margin-top: 0.3rem;
+    border-left: 3px solid var(--border-strong); padding-left: 0.5rem;
   }
-  #explorer .condition code, #line-detail .condition code { color: #333; }
+  #explorer .condition code, #line-detail .condition code { color: var(--code-fg); }
   #explorer .effect, #line-detail .effect {
-    font-size: 0.75rem; color: #555; margin-top: 0.2rem;
-    border-left: 3px solid #b58a2e; padding-left: 0.5rem;
+    font-size: 0.75rem; color: var(--fg-muted); margin-top: 0.2rem;
+    border-left: 3px solid var(--effect-border); padding-left: 0.5rem;
   }
-  #explorer .effect code, #line-detail .effect code { color: #333; }
+  #explorer .effect code, #line-detail .effect code { color: var(--code-fg); }
   /* A raw userscript/condition call (e.g.
      SetVariableValue("boardwalk.pigs_espirt_morrands_from_trafic", true))
      is often one long unbroken identifier - <code> doesn't wrap by
@@ -90,8 +239,8 @@
   }
   #explorer .modifiers, #line-detail .modifiers { font-size: 0.75rem; margin-top: 0.2rem; }
   #explorer .modifiers li, #line-detail .modifiers li { list-style: none; }
-  #explorer .mod-pos, #line-detail .mod-pos { color: #1a6b2e; font-weight: bold; }
-  #explorer .mod-neg, #line-detail .mod-neg { color: #a31212; font-weight: bold; }
+  #explorer .mod-pos, #line-detail .mod-pos { color: var(--success); font-weight: bold; }
+  #explorer .mod-neg, #line-detail .mod-neg { color: var(--failure); font-weight: bold; }
   #explorer .mod-detail, #line-detail .mod-detail { font-size: 0.9em; opacity: 0.7; }
   #explorer .options button {
     display: flex; flex-direction: column; align-items: stretch;
@@ -101,26 +250,31 @@
   #explorer .options .opt-row {
     display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
   }
-  #explorer .options .opt-condition { font-size: 0.7rem; color: #777; }
-  #explorer .options .opt-condition code { color: #555; }
-  #explorer .options button.you { border-left: 3px solid #1a5fb4; }
-  #explorer .options button.cross { border-left: 3px solid #c33; }
-  #explorer .options button.outcome-success { border-right: 5px solid #1a6b2e; }
-  #explorer .options button.outcome-failure { border-right: 5px solid #a31212; }
+  #explorer .options .opt-condition { font-size: 0.7rem; color: var(--fg-faint); }
+  #explorer .options .opt-condition code { color: var(--fg-muted); }
+  #explorer .options button.you { border-left: 3px solid var(--you); }
+  #explorer .options button.cross { border-left: 3px solid var(--cross); }
+  #explorer .options button.outcome-success { border-right: 5px solid var(--success); }
+  #explorer .options button.outcome-failure { border-right: 5px solid var(--failure); }
   #explorer .options .outcome { font-size: 0.75rem; font-weight: bold; white-space: nowrap; flex-shrink: 0; }
-  #explorer .options .outcome.success { color: #1a6b2e; }
-  #explorer .options .outcome.failure { color: #a31212; }
-  #explorer .options .opt-id { color: #999; font-size: 0.75rem; }
+  #explorer .options .outcome.success { color: var(--success); }
+  #explorer .options .outcome.failure { color: var(--failure); }
+  #explorer .options .opt-id { color: var(--fg-faint); font-size: 0.75rem; }
   #explorer .options .opt-id-dup {
-    color: #000; background: #ffd54a; font-weight: bold;
+    color: var(--dup-fg); background: var(--dup-bg); font-weight: bold;
     padding: 0.05rem 0.3rem; border-radius: 3px;
   }
-  #explorer .end { color: #999; font-style: italic; }
+  #explorer .end { color: var(--fg-faint); font-style: italic; }
   #explorer-controls { margin-bottom: 0.5rem; }
   #explorer-controls button { margin-right: 0.4rem; }
 </style>
 </head>
 <body>
+<div id="theme-slider-wrap" title="theme: light / medium / dark">
+  <span>☀</span>
+  <input type="range" id="theme-slider" min="0" max="2" step="1" value="0" oninput="setTheme(Number(this.value))">
+  <span>☾</span>
+</div>
 <div id="site-header"></div>
 <h2>elysia, a Disco Elysium database crawler</h2>
 <div id="version-notice" class="meta"></div>
@@ -160,6 +314,12 @@
     <div id="updates-list"></div>
   </div>
 
+  <!-- FAQ / legal - static content, no backend involved -->
+  <div id="view-faq" style="display:none;">
+    <a class="back-link" href="#" onclick="goHome(); return false;">&larr; return to main page</a>
+    <div id="faq-list"></div>
+  </div>
+
   <!-- The interactive branch explorer -->
   <div id="view-branch" style="display:none;">
     <a class="back-link" href="#" onclick="goHome(); return false;">&larr; return to main page</a>
@@ -179,7 +339,57 @@
 
 </div>
 
-<script>
+<script type="module">
+// Frontend rewrite (2026-08-28): the graph-walk core (junction-skipping,
+// the passive-check exclusivity/reconvergence rule, per-field option
+// merging) and graph-native "back" now live in tested, dependency-free
+// modules instead of inline here - see frontend/graph.js, frontend/
+// back.js, and misc/frontend-rewrite-decisions.md for the reasoning
+// behind every rule. This script becomes a module (not a behavior
+// change on its own) purely so it can import them with no build step.
+// Relative, no leading slash - same convention every fetch() call in this
+// file already uses (fetch('branches/...'), fetch('audio/...'), ...) -
+// this page is reverse-proxied under a path prefix (/elysia/ in prod,
+// /elysia-dev/ here), so an absolute "/frontend/..." path resolves
+// against the domain root instead and 404s, silently killing the entire
+// module (an import failure aborts the whole script, not just these two
+// lines - explains "buttons don't work, sections missing" being
+// everything at once, not just the explorer). Same class of bug already
+// hit and fixed once in graph.checks.html earlier this session - missed
+// applying the same fix here.
+// (a bare "frontend/graph.js" specifier, no leading "./", is invalid for
+// an import statement in a browser at all - unlike fetch() URLs, import
+// specifiers require "./", "/", "../", or a full URL. "./" here still
+// resolves relative to this document's own URL, same fix as above.)
+import { indexBranch, resolveChain } from "./frontend/graph.js";
+import { resolvePrevReal } from "./frontend/back.js";
+
+// A module script's top-level `function` declarations are NOT exposed on
+// `window` the way a classic script's are - but this page renders its
+// buttons as HTML strings with inline onclick="foo(...)" attributes
+// throughout, which need exactly that. Function declarations are hoisted
+// within module scope, so referencing them here before their own
+// declaration further down the file is safe. Every name below is one
+// grep -oE 'onclick=["\'][a-zA-Z_]+\(' confirmed is actually used that
+// way - keep this list in sync if a new onclick handler is added.
+window.chooseOption = (...a) => chooseOption(...a);
+window.copyToClipboard = (...a) => copyToClipboard(...a);
+window.goBack = (...a) => goBack(...a);
+window.goHome = (...a) => goHome(...a);
+window.navigate = (...a) => navigate(...a);
+window.playVoiceLine = (...a) => playVoiceLine(...a);
+window.restartBranch = (...a) => restartBranch(...a);
+window.setMode = (...a) => setMode(...a);
+window.setTheme = (...a) => setTheme(...a);
+window.submitBranchJump = (...a) => submitBranchJump(...a);
+window.submitBranchLookup = (...a) => submitBranchLookup(...a);
+window.submitBranchSearch = (...a) => submitBranchSearch(...a);
+window.submitCheckSearch = (...a) => submitCheckSearch(...a);
+window.submitEffectSearch = (...a) => submitEffectSearch(...a);
+window.submitLineLookup = (...a) => submitLineLookup(...a);
+window.submitLinesSearch = (...a) => submitLinesSearch(...a);
+window.submitOrbSearch = (...a) => submitOrbSearch(...a);
+
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str ?? "";
@@ -333,6 +543,7 @@ const VIEW_CONTAINERS = {
   line: "view-line",
   orb: "view-line",
   updates: "view-updates",
+  faq: "view-faq",
   branch: "view-branch",
 };
 
@@ -355,6 +566,7 @@ function render(params) {
   else if (view === "line") runLineDetail(params.branch, params.id);
   else if (view === "orb") runOrbDetail(params.branch);
   else if (view === "updates") renderUpdates();
+  else if (view === "faq") renderFaq();
   else if (view === "branch") runBranchExplorer(params.branch, params.at);
   else renderHome();
 }
@@ -370,6 +582,11 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "2.1.0", changes: [
+    "Rewrote the branch explorer's core graph-walk logic from scratch, as tested standalone modules instead of inline code - fixed several real bugs in the process: a passive skill check with no sibling fork was sometimes silently skipped from the display instead of shown; check/passive-check badges could leak onto an unrelated option button that never actually required them; a passive check whose downstream gates real exclusive content is now recognized precisely (not by a rough heuristic) as an option worth stopping on",
+    "Alternate lines now have their own play button, playing their own distinct recording where one exists, instead of silently reusing the parent line's audio",
+    "Added a light/medium/dark theme slider (top-right) - previously light-only",
+  ]},
   { version: "2.0.0", changes: [
     "Added voice-line playback - a small play button next to any line that has one",
   ]},
@@ -457,10 +674,84 @@ function renderUpdates() {
   `).join("");
 }
 
+// Static, hand-maintained, same idea as CHANGELOG - plain content, no
+// backend involved. Covers a direct question about this project's legal
+// footing - see the site's own entry below for the actual position taken.
+const FAQ = [
+  {
+    q: "What is this?",
+    a: "A line-lookup and dialogue-tree explorer for Disco Elysium - built to find a specific line, branch, or check quickly, and to see how a conversation actually branches. It exists for personal reference, study of the game's writing/branching structure, and preservation - not as a way to read or listen through the game itself."
+  },
+  {
+    q: "Is this a substitute for playing Disco Elysium?",
+    a: "No, and it isn't meant to be one. This site does not try to reproduce the experience of playing the game - the pacing, the visuals, the music, the moment-to-moment decisions, the game as a whole. It's a lookup tool for a specific line/branch/check you're already trying to find, not a way to consume the game's writing as a substitute for owning and playing it."
+  },
+  {
+    q: "Is this affiliated with ZA/UM or the Disco Elysium developers?",
+    a: "No. This is an independent fan-made project, not affiliated with, endorsed by, or connected to ZA/UM or any Disco Elysium rights holder in any way. No ownership or authorship of any game content - text, audio, or otherwise - is claimed or implied here; Disco Elysium and everything in it belongs to its actual creators."
+  },
+  {
+    q: "Does this cost anything, or make any money?",
+    a: "No, on both counts. This site is free to use, with no account, paywall, or ads, and it isn't monetized in any way - no donations, no sponsorships, not even to cover hosting costs. Nothing about running it is meant to turn a profit or offset expenses off the back of someone else's work."
+  },
+  {
+    q: "Where does the data come from?",
+    a: "Extracted from a legally owned copy of the game, for personal reference and as a fan tool - see the GitHub repo linked on the main page for the technical details of how."
+  },
+  {
+    q: "I'm a rights holder (or represent one) and want something changed or removed.",
+    a: `Reach out at <a href="mailto:me@arda0.net">me@arda0.net</a> with what you'd like addressed. I'll comply with any legitimate takedown or content-removal request in good faith.`
+  },
+];
+
+function renderFaq() {
+  const out = document.getElementById("faq-list");
+  out.innerHTML = FAQ.map(item => `
+    <div class="result-item">
+      <div><strong>${escapeHtml(item.q)}</strong></div>
+      <div>${item.a}</div>
+    </div>
+  `).join("");
+}
+
 function setMode(mode) {
   currentMode = mode;
   renderHome();
 }
+
+// Theme - light/medium/dark via the top-right slider. The CSS itself
+// (see <style>'s tokens) already follows the OS preference with zero JS
+// needed, landing on the light or dark tier specifically (never medium -
+// there's no OS-level "medium" preference to map to, it's manual-only).
+// This is only for an explicit override, persisted across reloads.
+// "elysia-theme" holds "light"/"medium"/"dark" once the slider's ever
+// been moved, otherwise absent (follow system). The <head>'s own tiny
+// inline script applies a stored override before first paint - this only
+// needs to keep the slider position and live attribute in sync from here.
+const THEME_TIERS = ["light", "medium", "dark"];
+function currentEffectiveTheme() {
+  const stored = document.documentElement.getAttribute("data-theme");
+  if (stored) return stored;
+  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+function updateThemeSliderPosition() {
+  const i = THEME_TIERS.indexOf(currentEffectiveTheme());
+  document.getElementById("theme-slider").value = i === -1 ? 0 : i;
+}
+function setTheme(tierIndex) {
+  const next = THEME_TIERS[tierIndex] ?? "light";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("elysia-theme", next); } catch (e) {}
+}
+updateThemeSliderPosition();
+// Only matters while no explicit override is stored - keeps the slider
+// (and, via the CSS media query itself, the whole page) following a live
+// OS-level theme change instead of needing a reload to notice it.
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  let hasOverride = false;
+  try { hasOverride = !!localStorage.getItem("elysia-theme"); } catch (e) {}
+  if (!hasOverride) updateThemeSliderPosition();
+});
 
 function renderHome() {
   for (const btn of document.querySelectorAll("#mode-tabs button")) {
@@ -479,7 +770,11 @@ function renderHome() {
         <div class="landing-contact meta">
           <span>requests and problems - reach out on discord: needbeypazari</span>
         </div>
-        <p class="meta"><a href="#" onclick="navigate({view:'updates'}); return false;">updates / changelog</a></p>
+        <p class="meta">
+          <a href="#" onclick="navigate({view:'updates'}); return false;">updates / changelog</a>
+          <span class="sep">&middot;</span>
+          <a href="#" onclick="navigate({view:'faq'}); return false;">FAQ</a>
+        </p>
       </div>
     `;
   } else if (currentMode === "lines") {
@@ -855,6 +1150,7 @@ async function runOrbDetail(branch) {
 let branchData = null;
 let entriesById = {};
 let linksByOrigin = {};
+let graphIdx = null;  // graph.js's BranchIndex - see indexBranchData(); entriesById/linksByOrigin above are kept as direct references into it, not a separate copy, so both stay in sync automatically
 let currentDentryId = null;
 let currentOptions = [];
 let rootBranchId = null;         // the branch id "restart"/"copy branch address" use
@@ -877,12 +1173,14 @@ let backTrail = new Set();
 
 function indexBranchData(json) {
   branchData = json;
-  entriesById = {};
-  linksByOrigin = {};
-  for (const e of json.entries) entriesById[e.dentry_id] = e;
-  for (const l of json.links) {
-    (linksByOrigin[l.from_dentry_id] ||= []).push(l);
-  }
+  graphIdx = indexBranch(json.branch_id, json);
+  // Kept as plain references into graphIdx's own objects (not copies) -
+  // every other function in this file that reads entriesById/
+  // linksByOrigin directly (renderNodeHtml, renderOptions, search
+  // helpers, ...) keeps working unmodified, while renderChainFrom/
+  // chooseOption/goBack go through graphIdx via graph.js/back.js.
+  entriesById = graphIdx.entriesById;
+  linksByOrigin = graphIdx.linksByOrigin;
 }
 
 let branchQueryTimeMs = 0;  // reset per renderChainFrom call, summed across
@@ -898,173 +1196,12 @@ async function fetchBranch(branchId) {
   return await res.json();
 }
 
-// Walks forward from dentryId, transparently skipping system/junction
-// nodes, and returns the list of reachable "real" next steps - either a
-// real line/choice in this branch, or a marker that the tree leaves to a
-// different branch entirely. visited guards against cycles (the graph is
-// not guaranteed to be acyclic).
-// activeFlag is the flagname of the check the caller is currently past (if
-// any) - a check's pass/fail branches are encoded in this dataset as two
-// system/group nodes further down the graph, gated by conditionstring
-// Variable["<flag>"] (success) or (Variable["<flag>"]) == false (failure).
-// Confirmed against the real data (checks.flagname cross-referenced with
-// dentries.conditionstring) rather than assumed. Every option inherits the
-// outcome of whichever gate it passed through, if any.
-// conditions accumulates any *other* (non-outcome) gating conditions seen
-// on system/group nodes passed through on the way to this option - the
-// tool never evaluates these (no live game state to check them against),
-// it just surfaces them so alternatives-by-variable are visibly labeled
-// instead of silently presented as if they were unconditional choices.
-function resolveNextOptions(dentryId, activeFlag, visited, outcome, conditions, passThrough) {
-  visited = visited || new Set();
-  conditions = conditions || [];
-  passThrough = passThrough || [];
-  const options = [];
-  const links = linksByOrigin[dentryId] || [];
-  for (const l of links) {
-    if (l.leaves_branch) {
-      options.push({ type: "cross", toBranch: l.to_branch_id, toDentry: l.to_dentry_id, outcome: outcome || null, conditions, passThrough });
-      continue;
-    }
-    if (visited.has(l.to_dentry_id)) continue;
-    const dest = entriesById[l.to_dentry_id];
-    if (!dest) continue;
-    if (dest.is_system) {
-      let nextOutcome = outcome || null;
-      let nextConditions = conditions;
-      if (dest.condition) {
-        if (activeFlag && dest.condition === `Variable["${activeFlag}"]`) {
-          nextOutcome = "success";
-        } else if (activeFlag && dest.condition === `(Variable["${activeFlag}"]) == false`) {
-          nextOutcome = "failure";
-        } else {
-          // a generic gate, not the specific check-outcome pattern above -
-          // record it rather than silently passing through.
-          nextConditions = [...conditions, dest.condition];
-        }
-      }
-      const nextVisited = new Set(visited);
-      nextVisited.add(l.to_dentry_id);
-      options.push(...resolveNextOptions(l.to_dentry_id, activeFlag, nextVisited, nextOutcome, nextConditions, passThrough));
-    } else if (dest.passive_check) {
-      // A skill "speaking" unprompted is never a real dialogue choice - it
-      // fires (or doesn't) purely based on state, exactly like a system
-      // junction's gate, not something the player picked between. Walking
-      // straight through it instead of stopping here never actually loses
-      // a distinct path - arda, 2026-08-26: "passive checks are never a
-      // dialogue option ... a fork defeats that purpose for passive checks
-      // that doesn't even lose us paths to display." The line is still
-      // real content though, so it rides along in passThrough and gets
-      // rendered (via the normal single-hop auto-advance) once the walk
-      // actually reaches it.
-      const nextVisited = new Set(visited);
-      nextVisited.add(l.to_dentry_id);
-      const lineConditions = dest.condition ? [...conditions, dest.condition] : conditions;
-      const nextPassThrough = [...passThrough, { dentryId: l.to_dentry_id, conditions: lineConditions }];
-      const beyond = resolveNextOptions(l.to_dentry_id, activeFlag, nextVisited, outcome, [], nextPassThrough);
-      // The above only holds when the check leads onward to a single real
-      // continuation (or a dead end) - the "no distinct path lost" claim
-      // assumes there's nothing to distinguish yet. If the check instead
-      // opens straight onto a genuine further fork, flattening it in here
-      // would mix that fork's several destinations into this level's own
-      // sibling list, right alongside options that never went through the
-      // check at all - arda, 2026-08-26: confirmed on branch 1370/291
-      // (a passive check whose downstream immediately re-forks 4 ways,
-      // sitting next to an unrelated direct sibling, 307): the 4
-      // downstream options showed up as if they were 291's own, each
-      // wearing 292's difficulty badge without ever showing 292's actual
-      // line, and picking any of them silently walked through 292 first
-      // anyway. Stop at the check itself instead - render it as its own
-      // stopping option, exactly like a real line - and let the normal
-      // walk discover its downstream fork fresh once it's actually
-      // entered.
-      if (beyond.length > 1) {
-        options.push({ type: "line", dentryId: l.to_dentry_id, outcome: outcome || null, conditions: lineConditions, passThrough });
-      } else {
-        options.push(...beyond);
-      }
-    } else {
-      // The destination line can carry its own gating condition directly
-      // (not just via an intermediate system junction) - e.g. two options
-      // with identical preview text that are actually a before/after-quest
-      // variant pair, distinguished only by their own conditionstring.
-      // Missing this made such pairs look like unexplained duplicates.
-      const lineConditions = dest.condition ? [...conditions, dest.condition] : conditions;
-      options.push({ type: "line", dentryId: l.to_dentry_id, outcome: outcome || null, conditions: lineConditions, passThrough });
-    }
-  }
-  return mergeIdenticalOptions(options);
-}
-
-// A fork whose branches only differ in whether a passive check fired along
-// the way (see the dest.passive_check case above) still produces two
-// distinct option entries pointing at the exact same real destination -
-// walking through the check or skipping it both land the player on the
-// same next content. That's not two paths, it's one path described two
-// ways, so merge them into a single option instead of stopping to ask
-// which one to click. Reached-unconditionally wins over any leftover
-// condition (if even one merged path needed no gate, the destination as a
-// whole needs no gate either - the other path's condition just describes
-// one specific way in, not a restriction on all of them).
-function mergeIdenticalOptions(options) {
-  const groups = new Map();
-  const order = [];
-  for (const o of options) {
-    const key = o.type === "cross" ? `cross:${o.toBranch}:${o.toDentry}` : `line:${o.dentryId}`;
-    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
-    groups.get(key).push(o);
-  }
-  const merged = [];
-  for (const key of order) {
-    const group = groups.get(key);
-    if (group.length === 1) { merged.push(group[0]); continue; }
-    const anyUnconditional = group.some(o => !o.conditions || o.conditions.length === 0);
-    const conditions = anyUnconditional ? [] : group[0].conditions;
-    const seenPt = new Set();
-    const passThrough = [];
-    for (const o of group) for (const pt of (o.passThrough || [])) {
-      if (!seenPt.has(pt.dentryId)) { seenPt.add(pt.dentryId); passThrough.push(pt); }
-    }
-    const withOutcome = group.find(o => o.outcome);
-    merged.push({ ...group[0], conditions, passThrough, outcome: withOutcome ? withOutcome.outcome : null });
-  }
-  return merged;
-  return options;
-}
-
-// A passive-check chain doesn't always fully collapse a fork away (see
-// mergeIdenticalOptions) - sometimes it leads into a REAL multi-way fork,
-// where every option still carries the exact same passThrough prefix (the
-// same checks, walked once, before the graph actually branches). That
-// shared prefix is real content that needs rendering once, exactly like
-// the already-handled case of a passThrough collapsing to a single option
-// - it's just reached via renderChainFrom's while-loop breaking (a genuine
-// fork) instead of continuing (a full collapse).
-//
-// The shared part can also be partial - e.g. arda, 2026-08-27: branch
-// 1370/5 walks through one passive check (291), reaches a system junction
-// that itself forks, and only ONE side of that fork picks up a *second*
-// passive check (292) before its own further real fork - the other side
-// has none. Every option there still shares 291, they just don't all
-// share 292 too. Returning [] for that (the old "reject on any length
-// mismatch" behavior) meant 291 never got rendered as its own line at
-// all, and re-appeared as a duplicate badge on every single option button
-// instead of once - same visible "bleeding" symptom as the fully-disagreeing
-// case, but from a shared-then-diverging chain, not two unrelated ones.
-// Returns the longest prefix every option actually agrees on (possibly
-// empty, if they disagree from the very first entry).
-function commonPassThroughPrefix(opts) {
-  if (!opts.length) return [];
-  let prefix = opts[0].passThrough || [];
-  for (const o of opts) {
-    const pt = o.passThrough || [];
-    let i = 0;
-    while (i < prefix.length && i < pt.length && pt[i].dentryId === prefix[i].dentryId) i++;
-    prefix = prefix.slice(0, i);
-    if (!prefix.length) break;
-  }
-  return prefix;
-}
+// resolveNextOptions / mergeIdenticalOptions / commonPassThroughPrefix
+// used to live here - replaced by graph.js's resolveOptions/resolveChain
+// (imported above), which fixed two real bugs in this logic (badge/
+// passThrough leaking across merged options with no exclusion rule, and
+// a lone passive check with no sibling being silently skipped instead of
+// rendered) - see misc/frontend-rewrite-decisions.md.
 
 // Switches the loaded branchData/index to branchId, fetching if needed,
 // and updates the title so it stays in sync whenever a chain walk crosses
@@ -1124,11 +1261,16 @@ function passiveCheckBadgeHtml(pc) {
 // against its rate limit) a second time - the response's own
 // Cache-Control header (see get_voice_line) makes the browser's ordinary
 // HTTP cache serve it straight from disk once played.
-async function playVoiceLine(branchId, dentryId, btn) {
+// altIndex = this alternate's own position in entry.alternates (its own
+// recording, via /audio/.../alt/{i} - added this session, see
+// misc/frontend-rewrite-decisions.md for the positional-match evidence)
+// - omit/null for the parent line's own button (plain /audio/...).
+async function playVoiceLine(branchId, dentryId, btn, altIndex) {
   btn.disabled = true;
   const reset = () => { btn.disabled = false; };
   try {
-    const res = await fetch(`audio/${branchId}/${dentryId}`);
+    const audioPath = altIndex == null ? `audio/${branchId}/${dentryId}` : `audio/${branchId}/${dentryId}/alt/${altIndex}`;
+    const res = await fetch(audioPath);
     if (res.status === 429) {
       const body = await res.json().catch(() => ({}));
       alert(body.detail || "Too many voice-line requests - please slow down.");
@@ -1140,9 +1282,9 @@ async function playVoiceLine(branchId, dentryId, btn) {
       btn.title = "no voice line found for this dentry";
       return;
     }
-    const url = URL.createObjectURL(await res.blob());
-    const audio = new Audio(url);
-    const cleanup = () => { reset(); URL.revokeObjectURL(url); };
+    const blobUrl = URL.createObjectURL(await res.blob());
+    const audio = new Audio(blobUrl);
+    const cleanup = () => { reset(); URL.revokeObjectURL(blobUrl); };
     audio.addEventListener("ended", cleanup);
     audio.play().catch(cleanup);
   } catch (e) {
@@ -1213,9 +1355,21 @@ function renderNodeHtml(entry, branchId, showCopyLink, extraConditions) {
       + `onclick="playVoiceLine(${branchId}, ${entry.dentry_id}, this)">&#9654;</button>`
     : "";
   html += `<div class="text">${playBtn}<span>${escapeHtml(entry.text)}</span></div>`;
+  // Alternates never had a play button before (found this session) - an
+  // alternate has no dentry_id of its own, so it plays its OWN recording
+  // where one exists (alt = its position in this array), reusing the
+  // parent's has_voice_actor gate (main.py has no cheaper way to know in
+  // advance whether this *specific* alternate has a clip - same
+  // best-effort-click reasoning as the parent line's own button).
   if (entry.alternates.length) {
     html += `<div class="alts"><em>alternate lines:</em><ul>`
-          + entry.alternates.map(a => `<li>if <code>${escapeHtml(a.condition)}</code>: ${escapeHtml(a.text)}</li>`).join("")
+          + entry.alternates.map((a, i) => {
+              const altBtn = entry.has_voice_actor
+                ? `<button class="voice-play-btn" title="play voice line" `
+                  + `onclick="playVoiceLine(${branchId}, ${entry.dentry_id}, this, ${i})">&#9654;</button>`
+                : "";
+              return `<li>${altBtn}if <code>${escapeHtml(a.condition)}</code>: ${escapeHtml(a.text)}</li>`;
+            }).join("")
           + `</ul></div>`;
   }
   html += `</div>`;
@@ -1224,11 +1378,11 @@ function renderNodeHtml(entry, branchId, showCopyLink, extraConditions) {
 
 // The core of the flattening: starting at (startBranchId, startDentryId),
 // keeps auto-advancing through any node that has exactly one way forward
-// (whether that's a plain single link or a system-junction chain that
-// resolveNextOptions() already collapsed to one real option), collecting
-// every real line along the way - including lines from other branches, if
-// the only way forward happens to cross into one. It only stops to show
-// buttons once there's an actual choice (0 or 2+ options).
+// (see graph.js's resolveChain/resolveOptions, which now do the actual
+// walking/collapsing), collecting every real line along the way -
+// including lines from other branches, if the only way forward happens
+// to cross into one. It only stops to show buttons once there's an
+// actual choice (0 or 2+ options).
 async function renderChainFrom(startBranchId, startDentryId) {
   const out = document.getElementById("explorer");
   // What "back" will find the predecessor of, next time it's pressed - see
@@ -1261,79 +1415,47 @@ async function renderChainFrom(startBranchId, startDentryId) {
     }
   }
 
+  // The walking loop itself now lives in graph.js's resolveChain() -
+  // pure, stateless, one real hop at a time, already covers everything
+  // this loop used to do by hand (junction-skipping, the passive-check
+  // exclusivity rule, per-field option merging, cycle guard, via content)
+  // plus fixes two real bugs the old inline version had (see
+  // misc/frontend-rewrite-decisions.md). A cross-branch link mid-chain
+  // still needs a fresh fetch + a fresh resolveChain call on the other
+  // side, since graph.js is pure/no-I/O and can't follow it on its own.
   let dentryId = startDentryId;
   let currentBranchId = startBranchId;
   const collected = [];
-  const visited = new Set();
+  const branchesSeen = new Set();  // cycle guard across resolveChain calls (a cross-branch loop)
   let finalOptions = [];
-  let activeCheckFlag = null;  // sticks until the next real check overwrites it
-  // Conditions on system/junction nodes the walk is about to pass through
-  // to reach the *next* collected entry - resolveNextOptions already
-  // accumulates these while skipping is_system nodes internally, but the
-  // old loop only ever used `only.dentryId`/`only.toDentry`, throwing the
-  // accumulated conditions away. Carried forward here so the entry they
-  // gated can still show them once rendered.
-  let pendingConditions = [];
 
   while (true) {
     const key = currentBranchId + ":" + dentryId;
-    if (visited.has(key)) { finalOptions = []; break; }  // cycle guard - stop rather than loop forever
-    visited.add(key);
+    if (branchesSeen.has(key)) { finalOptions = []; break; }
+    branchesSeen.add(key);
 
-    const entry = entriesById[dentryId];
-    if (entry && !entry.is_system) {
-      collected.push({ branchId: currentBranchId, entry, conditions: pendingConditions });
-      pendingConditions = [];
-      if (entry.check) activeCheckFlag = entry.check.flag;
+    const chain = resolveChain(graphIdx, dentryId);
+    for (const c of chain.collected) {
+      const entry = entriesById[c.dentryId];
+      if (entry) collected.push({ branchId: currentBranchId, entry, conditions: c.conditions });
     }
 
-    const opts = resolveNextOptions(dentryId, activeCheckFlag);
-    if (opts.length !== 1) {
-      // A genuine fork (or dead end) - stop here. But first, render
-      // whatever passive-check prefix every option agrees on (see
-      // commonPassThroughPrefix - possibly only part of some options'
-      // full passThrough, if they share a first stretch and then
-      // diverge). That shared part is real content that was never
-      // actually stopped at on its own - render it now, in order, and
-      // strip only that shared part from each option, leaving any
-      // per-option remainder to renderOptions' passThroughHtml (which
-      // still handles a check that only some options walked through).
-      const prefix = commonPassThroughPrefix(opts);
-      for (const pt of prefix) {
-        const ptEntry = entriesById[pt.dentryId];
-        if (ptEntry) collected.push({ branchId: currentBranchId, entry: ptEntry, conditions: pt.conditions || [] });
+    const only = chain.options.length === 1 ? chain.options[0] : null;
+    if (only && only.type === "cross") {
+      try {
+        await switchToBranch(only.toBranch);
+      } catch (e) {
+        out.textContent = "failed: " + e;
+        return;
       }
-      finalOptions = opts.map(o => ({ ...o, passThrough: (o.passThrough || []).slice(prefix.length) }));
-      break;
+      currentBranchId = only.toBranch;
+      dentryId = only.toDentry;
+      continue;
     }
 
-    const only = opts[0];
-    // If a passive check was transparently walked through to reach this
-    // option (see resolveNextOptions), step into it first instead of
-    // jumping straight to the option's own target - it's real content
-    // that still needs rendering, it's just never a stop-and-click point.
-    // Re-resolving from there naturally rediscovers whatever comes after
-    // it (including the original option, or a further passive check, or
-    // a genuine fork), the same as any other single-hop node.
-    if (only.passThrough && only.passThrough.length) {
-      const first = only.passThrough[0];
-      pendingConditions = first.conditions || [];
-      dentryId = first.dentryId;
-    } else {
-      pendingConditions = only.conditions || [];
-      if (only.type === "cross") {
-        try {
-          await switchToBranch(only.toBranch);
-        } catch (e) {
-          out.textContent = "failed: " + e;
-          return;
-        }
-        currentBranchId = only.toBranch;
-        dentryId = only.toDentry;
-      } else {
-        dentryId = only.dentryId;
-      }
-    }
+    finalOptions = chain.options;
+    dentryId = chain.collected.length ? chain.collected[chain.collected.length - 1].dentryId : dentryId;
+    break;
   }
 
   currentDentryId = dentryId;
@@ -1498,21 +1620,19 @@ function renderOptions(options) {
     const condHtml = (o.conditions && o.conditions.length)
       ? `<div class="opt-condition">requires: ` + o.conditions.map(c => `<code>${escapeHtml(c)}</code>`).join(" and ") + `</div>`
       : "";
-    // A passive check reached on the way to this option no longer stops
-    // the walk on its own (see resolveNextOptions), but if this option is
-    // still a real fork for some other reason, its badge would otherwise
-    // vanish entirely - it's now several hops behind o.dentryId, not
-    // o.dentryId itself. Preview it here instead, in the order it's
-    // actually encountered.
-    const passThroughHtml = (o.passThrough || []).map(pt => {
-      const ptEntry = entriesById[pt.dentryId];
-      return ptEntry && ptEntry.passive_check ? passiveCheckBadgeHtml(ptEntry.passive_check) : "";
-    }).join("");
+    // Badges (real check or passive check) are shown ONLY on the actual
+    // line they belong to, never previewed on an unrelated option button -
+    // this is where the old app's badge-leak bug lived (mergeIdenticalOptions
+    // unioning passThrough with no exclusion rule - see decisions log). A
+    // passive check flattened through on the way to this option (o.via)
+    // is real content the branch viewer will render (badge included) once
+    // this option is actually taken - see chooseOption - just never
+    // previewed here beforehand.
 
     if (o.type === "cross") {
       return `<button class="cross${outcomeCls}" onclick="chooseOption(${i})">`
            + `<div class="opt-row"><span>&#8618; leaves to branch ${o.toBranch}</span>${outcomeTag(o.outcome)}</div>`
-           + passThroughHtml + condHtml + `</button>`;
+           + condHtml + `</button>`;
     }
     const e = entriesById[o.dentryId];
     const preview = (e.text || "").length > 90 ? e.text.slice(0, 90) + "..." : (e.text || "");
@@ -1536,7 +1656,7 @@ function renderOptions(options) {
       : e.passive_check ? passiveCheckBadgeHtml(e.passive_check) : "";
     return `<button class="${cls}" onclick="chooseOption(${i})">`
          + `<div class="opt-row"><span>${idTag} ${speakerLabel}: ${prefix}${escapeHtml(preview)}</span>${outcomeTag(o.outcome)}</div>`
-         + passThroughHtml + checkHtml + condHtml + `</button>`;
+         + checkHtml + condHtml + `</button>`;
   }).join("") + `</div>`;
 }
 
@@ -1548,12 +1668,17 @@ async function chooseOption(i) {
   backTrail = new Set();  // a forward move breaks any "back" streak
   branchQueryTimeMs = 0;  // this action's own timing window starts here
   const opt = currentOptions[i];
-  if (opt.passThrough && opt.passThrough.length) {
-    // Same reasoning as the auto-advance loop in renderChainFrom - a
-    // passive check hanging off this option (which can still happen when
-    // it doesn't fully collapse the fork away) gets walked into first,
-    // not skipped, even though it's reached via an explicit click here.
-    await renderChainFrom(currentBranchId_global, opt.passThrough[0].dentryId);
+  if (opt.via && opt.via.length) {
+    // A passive check flattened through on the way to this option (see
+    // graph.js's resolveOptions/via) is real content that still needs
+    // rendering, even though it's reached via an explicit click here -
+    // anchor the NEW walk at the check's own position, not the option's
+    // final destination. resolveChain is a pure function of its start
+    // point, so re-walking from there naturally re-discovers the exact
+    // same downstream (the check itself collected as ordinary content,
+    // same as any other line, then whatever comes after it) - reload-safe,
+    // no separate "render this content once, specially" path needed.
+    await renderChainFrom(currentBranchId_global, opt.via[0].dentryId);
   } else if (opt.type === "cross") {
     await renderChainFrom(opt.toBranch, opt.toDentry);
   } else {
@@ -1611,28 +1736,12 @@ async function fetchPredecessors(branchId, dentryId) {
   return await res.json();
 }
 
-async function resolvePrevReal(branchId, dentryId, visited) {
-  visited = visited || new Set();
-  const key = `${branchId}:${dentryId}`;
-  if (visited.has(key)) return null;  // cycle guard, same reasoning as the forward walk
-  visited.add(key);
-
-  const preds = await fetchPredecessors(branchId, dentryId);
-  if (!preds.length) return null;  // true root - nothing points here at all
-
-  preds.sort((a, b) => a.branch_id - b.branch_id || a.dentry_id - b.dentry_id);
-
-  for (const p of preds) {
-    const info = await fetchLineInfo(p.branch_id, p.dentry_id);
-    if (!info) continue;
-    if (!info.is_system) {
-      return { branchId: p.branch_id, dentryId: p.dentry_id };
-    }
-    const deeper = await resolvePrevReal(p.branch_id, p.dentry_id, visited);
-    if (deeper) return deeper;
-  }
-  return null;
-}
+// resolvePrevReal (the actual predecessor-walking algorithm) now lives in
+// back.js, imported above - same algorithm as before, just parameterized
+// over fetchPredecessors/fetchLineInfo (defined here, unchanged) instead
+// of hardcoding them, so it can be checked against the live API without a
+// DOM (see graph.checks.js). Deleted the near-duplicate copy that used to
+// live here.
 
 async function goBack() {
   const out = document.getElementById("explorer");
@@ -1641,7 +1750,7 @@ async function goBack() {
   branchQueryTimeMs = 0;  // this action's own timing window starts here
   try {
     backTrail.add(`${currentAnchorBranchId}:${currentAnchorDentryId}`);
-    const prev = await resolvePrevReal(currentAnchorBranchId, currentAnchorDentryId);
+    const prev = await resolvePrevReal(fetchPredecessors, fetchLineInfo, currentAnchorBranchId, currentAnchorDentryId);
     if (!prev) {
       const status = document.getElementById("explorerTitle");
       const orig = status.textContent;
