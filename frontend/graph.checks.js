@@ -62,15 +62,22 @@ export async function runChecks(apiBase) {
     assert(passiveCheckIsExclusive(idx1370, step292, siblings), "292 should be exclusive");
   });
 
-  await check("291 is never exclusive (no sibling bypass at its own fork point)", () => {
+  await check("291 has no siblings at its own fork point (resolveOptions never even calls passiveCheckIsExclusive here - single-hop short-circuit)", () => {
     // 291's own predecessor links straight to it with nothing else -
-    // confirm via the real link table rather than assuming.
+    // confirm via the real link table rather than assuming. Direct calls
+    // to passiveCheckIsExclusive([]) now correctly return true (no true
+    // bypass sibling = exclusive by definition, per the 569 fix below) -
+    // but that path is never actually exercised for a real single-hop
+    // step in practice, since resolveOptions short-circuits on
+    // steps.length === 1 before ever calling passiveCheckIsExclusive at
+    // all (see resolveOptions' own docs) - this check only confirms the
+    // no-sibling precondition holds for 291, not a behavior of the
+    // resolver itself (see the "does NOT skip past 291" check for that).
     const preSteps = nextRealSteps(idx1370, 5); // 5 -> 291 directly, per dlinks
     const step291 = preSteps.find(s => s.type === "line" && s.dentryId === 291);
     assert(step291, `expected a step landing on 291 from 5, got: ${JSON.stringify(preSteps)}`);
     const siblings = preSteps.filter(s => s !== step291);
     assert(siblings.length === 0, `expected no siblings for 291, got: ${JSON.stringify(siblings)}`);
-    assert(!passiveCheckIsExclusive(idx1370, step291, siblings), "291 should not be exclusive (no siblings)");
   });
 
   await check("resolveOptions(5) does NOT skip past 291 - it's the sole single-hop step, not a fork to flatten", () => {
@@ -87,6 +94,26 @@ export async function runChecks(apiBase) {
       dentryIds.length === 2 && dentryIds[0] === 292 && dentryIds[1] === 307,
       `expected exactly [292, 307], got: ${JSON.stringify(dentryIds)} (full: ${JSON.stringify(options)})`
     );
+  });
+
+  // --- 569/286: two parallel duplicate passive checks, no true bypass -
+  // real bug arda caught live (v2.1.0): both 289 and 6 were silently
+  // flattened away (each treated the OTHER as a "bypass"), leaking their
+  // shared downstream (23/26/290) up as if it belonged to neither check.
+  const idx569 = await fetchIndex(apiBase, 569);
+  await check("569: both duplicate passive checks (289, 6) are exclusive - no true bypass exists", () => {
+    const forkSteps = nextRealSteps(idx569, 286);
+    const ids = forkSteps.filter(s => s.type === "line").map(s => s.dentryId).sort((a, b) => a - b);
+    assert(JSON.stringify(ids) === JSON.stringify([6, 289]), `expected fork [6, 289], got: ${JSON.stringify(ids)}`);
+    for (const step of forkSteps) {
+      const siblings = forkSteps.filter(s => s !== step);
+      assert(passiveCheckIsExclusive(idx569, step, siblings), `expected dentry ${step.dentryId} to be exclusive (no true bypass sibling)`);
+    }
+  });
+  await check("resolveOptions(286) surfaces BOTH 289 and 6 as their own options, not their shared downstream", () => {
+    const options = resolveOptions(idx569, 286, new Set([286]));
+    const ids = options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
+    assert(JSON.stringify(ids) === JSON.stringify([6, 289]), `expected [6, 289], got: ${JSON.stringify(ids)} (full: ${JSON.stringify(options)})`);
   });
 
   await check("resolveChain(5) collects [5, 291] then stops on the real 292/307 fork", () => {

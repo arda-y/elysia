@@ -369,11 +369,33 @@ import { resolvePrevReal } from "./frontend/back.js";
 // buttons as HTML strings with inline onclick="foo(...)" attributes
 // throughout, which need exactly that. Function declarations are hoisted
 // within module scope, so referencing them here before their own
-// declaration further down the file is safe. Every name below is one
-// grep -oE 'onclick=["\'][a-zA-Z_]+\(' confirmed is actually used that
-// way - keep this list in sync if a new onclick handler is added.
+// declaration further down the file is safe.
+//
+// Real bug arda caught live (v2.1.0): "copy line/branch/ORB address"
+// buttons were broken - the first pass at this list only scanned for the
+// OUTERMOST call in each onclick (e.g. copyToClipboard), missing that
+// lineAddressUrl/branchAddressUrl/orbAddressUrl are called *inside*
+// those as nested arguments (onclick="copyToClipboard(lineAddressUrl(...),
+// this)") and need exposing too. Corrected scan:
+//   grep -oE 'onclick="[^"]*"|onclick='"'"'[^'"'"']*'"'"'' index.html \
+//     | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\(' | sort -u
+// (every identifier called anywhere inside an onclick attribute, not
+// just the first one) - keep this list in sync with that, not a
+// same-line-only grep, if a new onclick handler is added. One false-
+// positive that scan itself surfaces, worth knowing about before trusting
+// it blindly: paginationHtml's own `buildParams` parameter shows up
+// inside an onclick='...${JSON.stringify(buildParams(i))}' template
+// literal in the SOURCE, but that expression is evaluated away into a
+// literal JSON object before the button ever exists in the real DOM -
+// the identifier `buildParams` never actually appears at runtime, so it
+// needs no exposure. Check whether a flagged name is genuinely still
+// present in the *rendered* onclick attribute (view-source on the live
+// page, not just the template) before adding it here.
+window.branchAddressUrl = (...a) => branchAddressUrl(...a);
 window.chooseOption = (...a) => chooseOption(...a);
 window.copyToClipboard = (...a) => copyToClipboard(...a);
+window.lineAddressUrl = (...a) => lineAddressUrl(...a);
+window.orbAddressUrl = (...a) => orbAddressUrl(...a);
 window.goBack = (...a) => goBack(...a);
 window.goHome = (...a) => goHome(...a);
 window.navigate = (...a) => navigate(...a);
@@ -582,6 +604,10 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "2.1.1", changes: [
+    "Fixed two duplicate parallel passive skill checks on the same fork (e.g. branch 569) being silently skipped from the display, with their shared downstream content wrongly surfacing as if it belonged to neither check",
+    "Fixed the \"copy line/branch/ORB address\" buttons doing nothing",
+  ]},
   { version: "2.1.0", changes: [
     "Rewrote the branch explorer's core graph-walk logic from scratch, as tested standalone modules instead of inline code - fixed several real bugs in the process: a passive skill check with no sibling fork was sometimes silently skipped from the display instead of shown; check/passive-check badges could leak onto an unrelated option button that never actually required them; a passive check whose downstream gates real exclusive content is now recognized precisely (not by a rough heuristic) as an option worth stopping on",
     "Alternate lines now have their own play button, playing their own distinct recording where one exists, instead of silently reusing the parent line's audio",

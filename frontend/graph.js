@@ -161,9 +161,21 @@ function reachableKeys(idx, startStep) {
  * check was skipped), truncate right there — that shared node isn't
  * exclusive. Anything strictly before that reconvergence point is
  * exclusive content, which makes the check eligible. A check with no
- * sibling at all (the only way forward at this point) is never eligible
- * either — there is no bypass to compare against, so nothing is
- * "exclusive" to it in any meaningful sense; it's narrative texture.
+ * TRUE bypass sibling at all is always eligible - there is no way to
+ * reach anything here without going through some check, so its own
+ * content is exclusive to it by definition. "True bypass" specifically
+ * excludes another passive-check sibling from counting: two (or more)
+ * parallel passive checks that happen to reconverge on identical
+ * downstream content are NOT a check-vs-skip-the-check situation, they're
+ * duplicate/parallel content - confirmed on real data, branch 569: 286
+ * forks into two separate system-node chains (287->289, 288->6), both
+ * duplicate-text Encyclopedia passive checks, both eventually reaching
+ * the exact same downstream (14's fork) - there is no way to reach that
+ * fork at all without going through ONE of them, so treating either as
+ * "the other one is a bypass" silently flattened BOTH away, leaking
+ * their shared downstream up as if it belonged to neither - this is the
+ * known, already-documented genuine-duplicate-dentries case (see
+ * renderOptions' opt-id-dup handling), not something to collapse.
  *
  * @param {BranchIndex} idx
  * @param {Step} checkStep    // a "line" step whose entry has passive_check
@@ -171,9 +183,14 @@ function reachableKeys(idx, startStep) {
  * @returns {boolean}
  */
 export function passiveCheckIsExclusive(idx, checkStep, siblings) {
-  if (!siblings.length) return false; // no bypass to compare against at all
+  const bypassSiblings = siblings.filter(s => {
+    if (s.type !== "line") return true; // a cross-branch link is always a real bypass
+    const e = idx.entriesById[s.dentryId];
+    return !(e && e.passive_check); // another passive check is never a "skip this one" bypass
+  });
+  if (!bypassSiblings.length) return true; // no real bypass exists at all - exclusive by definition
   const bypassReachable = new Set();
-  for (const sib of siblings) for (const k of reachableKeys(idx, sib)) bypassReachable.add(k);
+  for (const sib of bypassSiblings) for (const k of reachableKeys(idx, sib)) bypassReachable.add(k);
 
   // BFS the check's own downstream, one real step at a time, tracking the
   // dentries already walked past (for the cycle guard passed to
