@@ -96,6 +96,28 @@ export async function runChecks(apiBase) {
     );
   });
 
+  // --- 292's own outcome-contradiction promotion: its effect sets
+  // plaza.tribunal_halflight_escalate=true, and 298 (downstream of 292)
+  // gates on that exact variable being false, landing on 308
+  // ("...*PIGFUCK!*..."). Same real pattern as 569 below, found in the
+  // SAME branch this whole exclusivity rule was originally built around -
+  // confirmed via the real link/condition table, not assumed. Promotion
+  // is scoped to exactly 292's own downstream (once you've committed to
+  // viewing 292 itself) - NOT pulled up to 293's/291's own level, where
+  // 292 is merely a sibling of the unrelated 307 and nothing about 292's
+  // own effect is settled yet.
+  await check("resolveOptions(292) promotes 308 alongside its own normal continuation", () => {
+    const options = resolveOptions(idx1370, 292, new Set([292]));
+    const dentryIds = options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
+    assert(dentryIds.includes(308), `expected 308 present, got: ${JSON.stringify(dentryIds)}`);
+  });
+  await check("resolveOptions(291)/resolveOptions(293) do NOT show 308 - 292's own effect isn't settled until you're on 292 itself", () => {
+    const from291 = resolveOptions(idx1370, 291, new Set([291])).filter(o => o.type === "line").map(o => o.dentryId);
+    const from293 = resolveOptions(idx1370, 293, new Set([293])).filter(o => o.type === "line").map(o => o.dentryId);
+    assert(!from291.includes(308), `291 should not show 308 yet, got: ${JSON.stringify(from291)}`);
+    assert(!from293.includes(308), `293 should not show 308 yet, got: ${JSON.stringify(from293)}`);
+  });
+
   // --- 569/286: two parallel duplicate passive checks, no true bypass -
   // real bug arda caught live (v2.1.0): both 289 and 6 were silently
   // flattened away (each treated the OTHER as a "bypass"), leaking their
@@ -114,6 +136,24 @@ export async function runChecks(apiBase) {
     const options = resolveOptions(idx569, 286, new Set([286]));
     const ids = options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
     assert(JSON.stringify(ids) === JSON.stringify([6, 289]), `expected [6, 289], got: ${JSON.stringify(ids)} (full: ${JSON.stringify(options)})`);
+  });
+
+  // --- 569's third check (290, Interfacing): the full diagnosis -
+  // 289/6's own SetVariableValue sets the exact variable 14's downstream
+  // fork (15/16) branches on, so 290 (16's branch) is the real "neither
+  // Encyclopedia check fired" outcome, not unrelated duplicate content.
+  // Scoped correctly: only appears once you've committed to 289 or 6
+  // (their own effect is what settles the variable), never at 286's own
+  // level (where neither has fired yet). Also confirms the specific
+  // wrongly-leaked options (10/7/11/38/78, only reachable via 290's own
+  // downstream) are gone from 289/6's own level now.
+  await check("resolveOptions(289) and resolveOptions(6) both promote 290, with no leaked 10/7/11/38/78", () => {
+    for (const start of [289, 6]) {
+      const options = resolveOptions(idx569, start, new Set([start]));
+      const ids = options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
+      assert(JSON.stringify(ids) === JSON.stringify([23, 26, 290]),
+        `expected [23, 26, 290] from ${start}, got: ${JSON.stringify(ids)}`);
+    }
   });
 
   await check("resolveChain(5) collects [5, 291] then stops on the real 292/307 fork", () => {

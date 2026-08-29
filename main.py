@@ -58,7 +58,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
-from sqlalchemy import event, text
+from sqlalchemy import bindparam, event, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 import uvicorn
@@ -250,6 +250,63 @@ def _clean_boilerplate_text(conn: sqlite3.Connection) -> None:
         )
         if cur.rowcount:
             print(f"  stripped boilerplate from {cur.rowcount} row(s) in {table}.{col}", flush=True)
+
+
+# actors.description is NOT flat text with trailing junk - it's a real
+# structured Chat Mapper format: ":{quip}:{tagline}\n\n{body}", where
+# quip is a short italic line, tagline an all-caps "COOL FOR: ..." line
+# (which can itself contain colons - "COOL FOR: X" - so only the FIRST
+# colon after the quip actually separates the two fields, everything
+# after belongs to tagline), and body the actual prose paragraph(s).
+# Two earlier versions of this fix, both corrected against live data the
+# same session: v1 treated the whole thing as flat text with a trailing "::"
+# to strip (right by accident for fully-empty rows, wrong for every real
+# one - never split the fields apart, missed the ":0:0" variant of the
+# same "0"-placeholder convention used everywhere else in this schema).
+# v2 split the fields correctly but only ever attempted it when the
+# string had a leading ':' - one actor (Perception) has the exact same
+# structure with that leading colon simply missing in the source data,
+# which v2 silently left unsplit. Distinguishing "real quip:tagline
+# structure, just missing its leading colon" from "prose that happens to
+# contain a colon as part of its OWN trailing junk" (Bed: "...you
+# sleep!:0:0", no blank line anywhere) needs a second signal beyond the
+# leading colon alone - a genuine blank line (the quip/tagline block is
+# always separated from the body by one) - confirmed by testing against
+# every one of the 421 non-empty raw rows, not assumed: zero rows where
+# this reads a false split from prose-with-trailing-junk.
+def _parse_actor_description(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    starts_with_colon = raw.startswith(":")
+    working = raw[1:] if starts_with_colon else raw
+    head, blank_line, body_part = working.partition("\n\n")
+    quip = tagline = body = None
+    if (starts_with_colon or blank_line) and ":" in head:
+        quip, _, tagline = head.partition(":")
+        quip = quip.strip() or None
+        tagline = tagline.strip() or None
+        if blank_line:
+            body = body_part.strip() or None
+    elif starts_with_colon:
+        quip = head.strip() or None
+    else:
+        body = raw.strip() or None
+
+    if quip in ("0", ""):
+        quip = None
+    if tagline in ("0", ""):
+        tagline = None
+    # The trailing junk marker on the no-leading-colon/no-blank-line
+    # shape - either "::" (49 rows) or ":0:0" (37 rows, same
+    # "0"-placeholder convention, just at the end here instead of the
+    # start) - verified against all 421 raw rows before applying: zero
+    # false negatives (nothing with real content left over after
+    # stripping colons/0/whitespace was ever nulled).
+    if body:
+        body = re.sub(r"[:0]{2,}$", "", body).strip() or None
+    if not quip and not tagline and not body:
+        return None
+    return {"quip": quip, "tagline": tagline, "body": body}
 
 
 # Branch 1428 ("Stage directions test dialogue") is a leftover developer
@@ -1018,6 +1075,133 @@ async def api_characters(request: Request):
     return _characters_cache
 
 
+# actors.description - real character/object flavor text (421 non-empty
+# raw rows, but only 117 actually meaningful once properly parsed - see
+# _parse_actor_description above for why: most of the rest are the same
+# "0"-placeholder convention used everywhere else in this schema, just
+# wrapped in the quip/tagline structure, not literally empty text).
+# Previously fetched nowhere and shown nowhere; added as structured
+# hover text on speaker names + its own browsable section,
+# same idea as _characters_cache. Values are the parsed {quip, tagline,
+# body} dict (or None), never the raw string.
+_actor_descriptions_cache: dict[int, dict] | None = None
+
+
+async def _get_actor_descriptions() -> dict[int, dict]:
+    global _actor_descriptions_cache
+    if _actor_descriptions_cache is None:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                text("SELECT id, description FROM actors WHERE description IS NOT NULL AND description != ''")
+            )
+            parsed = ((row.id, _parse_actor_description(row.description)) for row in result.fetchall())
+            _actor_descriptions_cache = {actor_id: desc for actor_id, desc in parsed if desc is not None}
+    return _actor_descriptions_cache
+
+
+@app.get("/actors/{actor_id}")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_actor_detail(request: Request, actor_id: int):
+    """One actor's name + description, for the hover tooltip and the
+    actor detail/browse page - a thin, cheap lookup against the same
+    cache /search/actors itself is built from."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT id, name FROM actors WHERE id = :id"), {"id": actor_id}
+        )
+        row = result.first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no actor with that id")
+    descriptions = await _get_actor_descriptions()
+    return {"id": row.id, "name": row.name, "description": descriptions.get(row.id)}
+
+
+@app.get("/search/actors")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_search_actors(request: Request, q: str = "", index: int = 0):
+    """Browsable actor list, same shape/pagination as /search/orbs -
+    name + description, filtered by a plain substring match on either
+    (q optional, empty = everyone). Actors with no name at all (a
+    handful of internal-only placeholder rows) are excluded, same as
+    /characters."""
+    limit = 100
+    async with AsyncSessionLocal() as session:
+        where = "WHERE name IS NOT NULL AND name != ''"
+        params: dict = {"limit": limit, "offset": index}
+        if q:
+            where += " AND (name LIKE :q OR description LIKE :q)"
+            params["q"] = f"%{q}%"
+        total_result = await session.execute(text(f"SELECT COUNT(*) AS c FROM actors {where}"), params)
+        total = total_result.scalar_one()
+        result = await session.execute(
+            text(f"SELECT id, name, description FROM actors {where} ORDER BY name LIMIT :limit OFFSET :offset"),
+            params,
+        )
+        rows = result.fetchall()
+    return {
+        "results": [{"id": r.id, "name": r.name, "description": _parse_actor_description(r.description)} for r in rows],
+        "total": total,
+        "index": index,
+        "limit": limit,
+        "has_more": index + limit < total,
+    }
+
+
+# variables.description - real plain-English explanations of what a raw
+# Variable["x.y.z"] flag actually means (7,823 of 10,513 rows have one;
+# the rest are the same "0"-means-nothing placeholder convention used
+# everywhere else in this schema, not a separate cleanup pass). Same
+# addition/reasoning as actors.description above.
+@app.get("/variables/lookup")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_variable_lookup(request: Request, name: str):
+    """Single-variable lookup by its exact name, for the hover tooltip on
+    a Variable["..."] reference in a condition/effect. A query param, not
+    a path segment - variable names contain dots and the occasional
+    other punctuation that would need escaping in a path."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT name, initialvalue, description FROM variables WHERE name = :name"),
+            {"name": name},
+        )
+        row = result.first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no variable with that name")
+    description = row.description if row.description not in (None, "", "0") else None
+    return {"name": row.name, "initial_value": row.initialvalue, "description": description}
+
+
+@app.get("/search/variables")
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def api_search_variables(request: Request, q: str = "", index: int = 0):
+    """Browsable variable list, same shape/pagination as /search/orbs -
+    name + description, filtered by a plain substring match on either (q
+    optional, empty = every variable with a real description - the
+    ~2,690 "0"-placeholder rows are excluded by default since they'd
+    otherwise dominate an unfiltered browse with rows that say nothing)."""
+    limit = 100
+    async with AsyncSessionLocal() as session:
+        where = "WHERE description IS NOT NULL AND description NOT IN ('', '0')"
+        params: dict = {"limit": limit, "offset": index}
+        if q:
+            where += " AND (name LIKE :q OR description LIKE :q)"
+            params["q"] = f"%{q}%"
+        total_result = await session.execute(text(f"SELECT COUNT(*) AS c FROM variables {where}"), params)
+        total = total_result.scalar_one()
+        result = await session.execute(
+            text(f"SELECT name, initialvalue, description FROM variables {where} ORDER BY name LIMIT :limit OFFSET :offset"),
+            params,
+        )
+        rows = result.fetchall()
+    return {
+        "results": [{"name": r.name, "initial_value": r.initialvalue, "description": r.description} for r in rows],
+        "total": total,
+        "index": index,
+        "limit": limit,
+        "has_more": index + limit < total,
+    }
+
+
 async def _resolve_character_id(session: AsyncSession, character: str) -> int:
     """character is matched against the actors list (id, or name -
     case-insensitively) - rejects anything not actually on that list
@@ -1330,7 +1514,40 @@ DIFFICULTY_TIERS = {
 SKILL_ACTOR_IDS = set(range(389, 413))
 
 
-def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
+_VARIABLE_REF_RE = re.compile(r'Variable\["([^"]+)"\]')
+
+
+async def _variable_descriptions_for_entries(session: AsyncSession, entries: list[dict]) -> dict[str, str]:
+    """Every Variable["x.y.z"] name referenced anywhere in this branch's
+    own condition/effect/alternate-condition text, resolved against the
+    variables table's real descriptions in one batch query - the branch
+    response embeds these directly (rather than a per-hover fetch) so a
+    condition/effect display can show hover text with zero extra
+    round-trips, same reasoning as speaker_description on each entry.
+    Names with no real description (the "0"-placeholder convention, see
+    /search/variables) are simply absent from the result - a hover with
+    nothing to say is just not shown, not shown-and-empty."""
+    names: set[str] = set()
+    for e in entries:
+        for text_val in (e.get("condition"), e.get("effect")):
+            if text_val:
+                names.update(_VARIABLE_REF_RE.findall(text_val))
+        for alt in e.get("alternates", []):
+            if alt.get("condition"):
+                names.update(_VARIABLE_REF_RE.findall(alt["condition"]))
+    if not names:
+        return {}
+    result = await session.execute(
+        text(
+            "SELECT name, description FROM variables "
+            "WHERE name IN :names AND description IS NOT NULL AND description NOT IN ('', '0')"
+        ).bindparams(bindparam("names", expanding=True)),
+        {"names": list(names)},
+    )
+    return {row.name: row.description for row in result.fetchall()}
+
+
+def _build_entry(row, check_row, modifier_rows, alternate_rows, actor_descriptions: dict[int, str]) -> dict:
     """Shared per-dentry classification logic - used by both /branches/{id}
     (bulk, one call per branch) and /branches/{id}/lines/{line_id} (single
     row), so the two endpoints can never quietly drift apart on what
@@ -1420,6 +1637,7 @@ def _build_entry(row, check_row, modifier_rows, alternate_rows) -> dict:
         "check": check,
         "passive_check": passive_check,
         "alternates": alternates,
+        "speaker_description": actor_descriptions.get(row.actor),
     }
 
 
@@ -1473,12 +1691,14 @@ async def _fetch_branch(conversation_id: int):
         for row in alternates_result.fetchall():
             alternates_by_dentry.setdefault(row.dialogueid, []).append(row)
 
+        actor_descriptions = await _get_actor_descriptions()
         entries = [
             _build_entry(
                 row,
                 checks_by_dentry.get(row.id),
                 modifiers_by_dentry.get(row.id, []),
                 alternates_by_dentry.get(row.id, []),
+                actor_descriptions,
             )
             for row in raw_entries
         ]
@@ -1535,6 +1755,8 @@ async def _fetch_branch(conversation_id: int):
                 "text": true_entry_row.true_entry_text,
             }
 
+        variables = await _variable_descriptions_for_entries(session, entries)
+
         return {
             "branch_id": dialogue.id,
             "title": dialogue.title,
@@ -1542,6 +1764,7 @@ async def _fetch_branch(conversation_id: int):
             "entries": entries,
             "links": links,
             "true_entry": true_entry,
+            "variables": variables,
         }
 
 
@@ -1834,9 +2057,11 @@ async def api_get_line(request: Request, conversation_id: int, line_id: int):
         )
         alternate_rows = alternates_result.fetchall()
 
-        entry = _build_entry(row, check_row, modifier_rows, alternate_rows)
+        actor_descriptions = await _get_actor_descriptions()
+        entry = _build_entry(row, check_row, modifier_rows, alternate_rows, actor_descriptions)
         entry["branch_id"] = conversation_id
         entry["branch_title"] = dialogue.title
+        entry["variables"] = await _variable_descriptions_for_entries(session, [entry])
         return entry
 
 

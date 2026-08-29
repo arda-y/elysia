@@ -79,9 +79,23 @@ export function indexBranch(branchId, json) {
  * @param {string[]} [conditions]
  * @returns {Step[]}
  */
-export function nextRealSteps(idx, dentryId, visited, conditions) {
+export function nextRealSteps(idx, dentryId, visited, conditions, activeVars) {
   visited = visited || new Set();
   conditions = conditions || [];
+  // A check's own `effect` (userscript) can set a variable that a
+  // downstream system node's own condition later tests - e.g. branch
+  // 569: 289/6's SetVariableValue("...remember_contact_mic", true)
+  // directly gates 14's own fork. Absorbed here (from whichever dentryId
+  // this specific call is walking FROM) so a downstream branch that
+  // CONTRADICTS it can be recognized as impossible and skipped, rather
+  // than treated as an ordinary unresolved conditional fork - see
+  // conditionOutcome() below. Self-contained: a fresh top-level call
+  // (activeVars omitted) still picks this up correctly from dentryId's
+  // own effect, no caller needs to thread anything across separate calls.
+  const selfEntry = idx.entriesById[dentryId];
+  const selfSetVar = selfEntry && extractSetVariable(selfEntry.effect);
+  const localVars = selfSetVar ? { ...activeVars, [selfSetVar.name]: selfSetVar.value } : (activeVars || {});
+
   const steps = [];
   const links = idx.linksByOrigin[dentryId] || [];
   for (const l of links) {
@@ -93,16 +107,87 @@ export function nextRealSteps(idx, dentryId, visited, conditions) {
     const dest = idx.entriesById[l.to_dentry_id];
     if (!dest) continue;
     if (dest.is_system) {
+      const outcome = dest.condition ? conditionOutcome(dest.condition, localVars) : "unknown";
+      if (outcome === "contradicted") continue; // impossible given what we now know - not an ordinary fork, just skip
+      // Still labeled even once "confirmed" (a known active var settles
+      // it) - a little redundant once you've already seen the check that
+      // guarantees it, but keeping the label is what lets
+      // passiveCheckIsExclusive later tell "reached unconditionally" apart
+      // from "reached via a gate that just happens to be confirmed right
+      // now" - stripping it here silently erased that distinction and
+      // broke the exclusivity check for anything conditionally downstream
+      // of a confirmed gate (real bug: branch 569's 290 got compared
+      // against 23/26 as if they were unconditional siblings, once 290's
+      // OWN confirming check had already stripped their label).
       const nextConditions = dest.condition ? [...conditions, dest.condition] : conditions;
       const nextVisited = new Set(visited);
       nextVisited.add(l.to_dentry_id);
-      steps.push(...nextRealSteps(idx, l.to_dentry_id, nextVisited, nextConditions));
+      steps.push(...nextRealSteps(idx, l.to_dentry_id, nextVisited, nextConditions, localVars));
     } else {
       const nextConditions = dest.condition ? [...conditions, dest.condition] : conditions;
       steps.push({ type: "line", dentryId: l.to_dentry_id, conditions: nextConditions });
     }
   }
+
+  // If dentryId's own effect sets a variable, its downstream may contain
+  // a branch that CONTRADICTS it (excluded above, via the "contradicted"
+  // skip) - that branch is real, alternate content (what you'd see if
+  // this check's effect never applied), not lost, so it's included here
+  // too rather than silently dropped. Lives here (self-triggered on
+  // whichever dentryId is actually being walked FROM) rather than as a
+  // separate step reachable only from within a multi-candidate fork -
+  // confirmed necessary on branch 1370: 291 itself (not a fork candidate,
+  // the walk's own entry point) sets plaza.tribunal_empathy_keep_talking,
+  // and its downstream fork (294/295, confirmed/contradicted) would
+  // otherwise collapse to a single silent step, never reaching
+  // resolveFork's per-candidate handling at all.
+  if (selfSetVar) {
+    const nextVisited = new Set(visited);
+    nextVisited.add(dentryId);
+    steps.push(...walkToContradiction(idx, dentryId, nextVisited, selfSetVar));
+  }
+
   return steps;
+}
+
+// Parses a userscript for a single SetVariableValue("name", true|false)
+// call - the common pattern (confirmed: 3,476 dentries database-wide
+// have a userscript matching this shape whose variable is also tested by
+// some downstream system node's own conditionstring in the same branch).
+// Scripts with more than one statement (e.g. "DamageEndurance(1);
+// SetVariableValue(...)") are searched, not required to match wholesale.
+// Returns null for anything else (multiple SetVariableValue calls, a
+// variable/value expression too dynamic to read statically, no script at
+// all) - deliberately conservative, never guesses.
+function extractSetVariable(effect) {
+  if (!effect) return null;
+  const matches = [...effect.matchAll(/SetVariableValue\(\s*"([^"]+)"\s*,\s*(true|false)\s*\)/g)];
+  if (matches.length !== 1) return null;
+  return { name: matches[0][1], value: matches[0][2] === "true" };
+}
+
+// Does `condition` test the exact variable in `activeVars`, and if so,
+// does it match or contradict the value already known for it? Only
+// recognizes the two literal shapes this dataset actually uses
+// (confirmed against real data, not guessed): `Variable["name"]` (tests
+// true) and `(Variable["name"]) == false` (tests false). Anything else -
+// a different variable, a compound/generic expression, a variable not
+// yet known - is "unknown": an ordinary unresolved conditional fork,
+// handled exactly as before this fix (both sides shown, labeled).
+function conditionOutcome(condition, activeVars) {
+  const eqFalse = condition.match(/^\(Variable\["([^"]+)"\]\)\s*==\s*false$/);
+  if (eqFalse) {
+    const name = eqFalse[1];
+    if (!(name in activeVars)) return "unknown";
+    return activeVars[name] === false ? "confirmed" : "contradicted";
+  }
+  const plain = condition.match(/^Variable\["([^"]+)"\]$/);
+  if (plain) {
+    const name = plain[1];
+    if (!(name in activeVars)) return "unknown";
+    return activeVars[name] === true ? "confirmed" : "contradicted";
+  }
+  return "unknown";
 }
 
 // A node's identity for reconvergence/dedup purposes - two "line" steps in
@@ -184,6 +269,19 @@ function reachableKeys(idx, startStep) {
  */
 export function passiveCheckIsExclusive(idx, checkStep, siblings) {
   const bypassSiblings = siblings.filter(s => {
+    // A CONDITIONALLY-gated sibling isn't a real, always-available bypass
+    // either - you can't actually take both paths in the same
+    // playthrough, so "the conditional sibling can also reach this" is
+    // true only for a different, incompatible game state, not for
+    // "yours" right now. Real bug this fixes: branch 569, 290 (an
+    // Interfacing check reachable only if you don't remember this
+    // conversation) was judged non-exclusive because its downstream
+    // coincidentally reconverges with 23/26's own downstream several
+    // hops later - but 23/26 are only reachable if you DO remember,
+    // mutually exclusive with 290's own precondition. Only an
+    // UNCONDITIONAL sibling is a genuine "skip this and get the same
+    // content for free" bypass.
+    if (s.conditions && s.conditions.length) return false;
     if (s.type !== "line") return true; // a cross-branch link is always a real bypass
     const e = idx.entriesById[s.dentryId];
     return !(e && e.passive_check); // another passive check is never a "skip this one" bypass
@@ -281,11 +379,61 @@ function resolveFork(idx, steps, visited) {
           result.push(...flattenThrough(idx, step, visited));
           continue;
         }
+        // Kept as its own exclusive option. Its own outcome-contradiction
+        // branch (see nextRealSteps' own self-triggered handling of a
+        // check's `effect`) is NOT pulled up to this level - it only
+        // becomes a real possibility once this specific check's own path
+        // is actually taken, not before (you can't know whether it fired
+        // until you're on it) - it surfaces naturally one level deeper,
+        // the moment nextRealSteps is next called on this check's own
+        // dentryId (e.g. once the user picks it, or via flattenThrough
+        // walking through it). Confirmed against real data: pulling it up
+        // to THIS level (an earlier version of this fix) was actually too
+        // eager - branch 1370's 292 gates 308 through its own further
+        // system fork (294/295), which only matters after committing to
+        // 292 itself, not alongside 292 and its unrelated sibling 307.
       }
     }
     result.push({ ...step, via: step.via || [] });
   }
-  return result;
+  return result; // resolveOptions merges the final combined result - see its own call site
+}
+
+/**
+ * Called from nextRealSteps itself whenever the dentry it's walking FROM
+ * has an effect setting a variable (see nextRealSteps' own comment) -
+ * walks that dentry's forward links looking for the nearest system-node
+ * condition that contradicts the variable/value just set - the
+ * divergence point between "this check fired" and "this check didn't
+ * fire". Everything from that point on is resolved normally, now knowing
+ * the OPPOSITE value. A path that never touches this variable again (no
+ * contradiction found before hitting real content) contributes nothing -
+ * there's no failure-specific content to promote on that path.
+ */
+function walkToContradiction(idx, dentryId, visited, setVar) {
+  const results = [];
+  const links = idx.linksByOrigin[dentryId] || [];
+  for (const l of links) {
+    if (l.leaves_branch) continue; // cross-branch contradiction promotion not handled - out of scope for now
+    if (visited.has(l.to_dentry_id)) continue;
+    const dest = idx.entriesById[l.to_dentry_id];
+    if (!dest || !dest.is_system) continue; // real content reached with no contradiction found on this path - nothing to promote
+    const outcome = dest.condition ? conditionOutcome(dest.condition, { [setVar.name]: setVar.value }) : "unknown";
+    const nextVisited = new Set(visited);
+    nextVisited.add(l.to_dentry_id);
+    if (outcome === "contradicted") {
+      // found the divergence - resolve normally from here, now knowing
+      // the opposite value (in case of a further nested check on the
+      // same variable, however unlikely).
+      results.push(...nextRealSteps(idx, l.to_dentry_id, nextVisited, [], { [setVar.name]: !setVar.value }));
+    } else if (outcome !== "confirmed") {
+      // an unrelated gate - keep descending, the divergence may be further in
+      results.push(...walkToContradiction(idx, l.to_dentry_id, nextVisited, setVar));
+    }
+    // "confirmed" is this check's own ordinary continuation, already
+    // covered by its normal via/options - not part of the failure branch.
+  }
+  return results;
 }
 
 /**

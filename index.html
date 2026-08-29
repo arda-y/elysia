@@ -174,6 +174,25 @@
      skill badge unreadable (black text on e.g. dark blue/purple/red)
      once dark mode was on. */
   .skill-badge { color: #fff; font-weight: bold; padding: 0.05rem 0.4rem; border-radius: 3px; }
+  /* Marks a span with a real hover title (actor/variable description)
+     - a dotted underline so the interactivity is
+     visible before hovering, not just discoverable by accident. cursor:
+     help (not pointer) since it's informational, not clickable. */
+  .hint { border-bottom: 1px dotted var(--fg-muted); cursor: help; }
+  #hover-tooltip {
+    display: none; position: fixed; z-index: 50; max-width: 320px;
+    background: var(--bg-raised); border: 1px solid var(--border-strong);
+    border-radius: 6px; padding: 0.6rem 0.8rem; font-size: 0.85rem;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25); pointer-events: none;
+  }
+  #hover-tooltip p { margin: 0 0 0.5rem; }
+  #hover-tooltip p:last-child { margin-bottom: 0; }
+  /* Shared with the inline actor search-result rendering
+     (actorDescriptionHtml), not just the hover tooltip - same
+     {quip, tagline, body} structure, just always-visible there instead
+     of on-demand. */
+  .hint-quip { font-style: italic; margin-bottom: 0.3rem; }
+  .hint-tagline { font-size: 0.75rem; letter-spacing: 0.02em; margin-bottom: 0.4rem; font-weight: bold; }
   .back-link { display: inline-block; margin-bottom: 0.8rem; font-size: 0.85rem; }
 
   .mode-tabs button { padding: 0.4rem 0.7rem; }
@@ -275,6 +294,7 @@
   <input type="range" id="theme-slider" min="0" max="2" step="1" value="0" oninput="setTheme(Number(this.value))">
   <span>☾</span>
 </div>
+<div id="hover-tooltip"></div>
 <div id="site-header"></div>
 <h2>elysia, a Disco Elysium database crawler</h2>
 <div id="version-notice" class="meta"></div>
@@ -292,6 +312,8 @@
       <button data-mode="orbs" onclick="setMode('orbs')">browse ORBs</button>
       <button data-mode="effects" onclick="setMode('effects')">an effect</button>
       <button data-mode="checks" onclick="setMode('checks')">checks</button>
+      <button data-mode="actors" onclick="setMode('actors')">a character</button>
+      <button data-mode="variables" onclick="setMode('variables')">a variable</button>
     </div>
     <div id="mode-form" style="margin-top: 0.6rem;"></div>
   </div>
@@ -403,6 +425,9 @@ window.playVoiceLine = (...a) => playVoiceLine(...a);
 window.restartBranch = (...a) => restartBranch(...a);
 window.setMode = (...a) => setMode(...a);
 window.setTheme = (...a) => setTheme(...a);
+window.showActorHint = (...a) => showActorHint(...a);
+window.showPlainHint = (...a) => showPlainHint(...a);
+window.hideHint = (...a) => hideHint(...a);
 window.submitBranchJump = (...a) => submitBranchJump(...a);
 window.submitBranchLookup = (...a) => submitBranchLookup(...a);
 window.submitBranchSearch = (...a) => submitBranchSearch(...a);
@@ -411,6 +436,8 @@ window.submitEffectSearch = (...a) => submitEffectSearch(...a);
 window.submitLineLookup = (...a) => submitLineLookup(...a);
 window.submitLinesSearch = (...a) => submitLinesSearch(...a);
 window.submitOrbSearch = (...a) => submitOrbSearch(...a);
+window.submitActorSearch = (...a) => submitActorSearch(...a);
+window.submitVariableSearch = (...a) => submitVariableSearch(...a);
 
 function escapeHtml(str) {
   const div = document.createElement("div");
@@ -478,10 +505,102 @@ const ATTRIBUTE_COLOR = {
 // Wraps `name` in its attribute-colored badge if it's a skill name (as a
 // check's skilltype, or as a skill speaking as an actor - both happen in
 // this dataset), otherwise returns it plain-escaped.
-function skillOrPlain(name) {
+// description (actors.description) is optional - most
+// call sites (search results) don't have it available without an extra
+// per-row fetch, so it's only ever passed where the caller already has
+// it for free (the branch explorer/line-detail entry itself). A native
+// title attribute rather than a custom tooltip widget - zero extra UI
+// code, works with keyboard/no-JS, exactly matches how a browser already
+// shows a link's title on hover.
+// Wraps each Variable["x.y.z"] reference inside `rawText` (a condition/
+// effect string - always escaped here, callers must never pre-escape it
+// themselves) with a hover span showing its real description, when one
+// exists. branchData.variables is embedded directly in the branch/
+// line-detail response already (see main.py's
+// _variable_descriptions_for_entries) - no extra fetch per hover, same
+// reasoning as speaker_description. Falls back to plain escaped text for
+// a reference with no known description, or a string with no reference
+// at all.
+function variableRefHtml(rawText) {
+  if (!rawText) return "";
+  const variables = (branchData && branchData.variables) || {};
+  const re = /Variable\["([^"]+)"\]/g;
+  let result = "";
+  let lastIndex = 0;
+  let m;
+  while ((m = re.exec(rawText))) {
+    result += escapeHtml(rawText.slice(lastIndex, m.index));
+    const desc = variables[m[1]];
+    const inner = escapeHtml(m[0]);
+    result += desc ? `<span class="hint"${plainHintAttrs(desc)}>${inner}</span>` : inner;
+    lastIndex = re.lastIndex;
+  }
+  result += escapeHtml(rawText.slice(lastIndex));
+  return result;
+}
+
+// Rich hover tooltip - actors.description (quip/tagline/body, see
+// main.py's _parse_actor_description) needs real italic/bold/paragraph
+// formatting, which a native `title` attribute can't render at all
+// (plain text only). One shared positioned element (#hover-tooltip)
+// rather than one per hint, shown/repositioned/hidden on demand.
+//
+// Data travels via a data-* attribute, JSON-encoded then HTML-escaped -
+// NOT interpolated directly into an inline onmouseenter="..." call. Real
+// prose is full of apostrophes ("it's", "you're") that would prematurely
+// close a single-quoted inline-JS string and break the page - escapeHtml
+// on the JSON text is what makes this safe regardless of quote style,
+// same reasoning as never building HTML via raw template-literal
+// concatenation of fetched text elsewhere in this file.
+function actorHintAttrs(desc) {
+  if (!desc) return "";
+  return ` data-actor-hint="${escapeHtml(JSON.stringify(desc))}" onmouseenter="showActorHint(this)" onmouseleave="hideHint()" onfocus="showActorHint(this)" onblur="hideHint()" tabindex="0"`;
+}
+function plainHintAttrs(text) {
+  if (!text) return "";
+  return ` data-hint="${escapeHtml(text)}" onmouseenter="showPlainHint(this)" onmouseleave="hideHint()" onfocus="showPlainHint(this)" onblur="hideHint()" tabindex="0"`;
+}
+function showActorHint(el) {
+  let desc;
+  try { desc = JSON.parse(el.dataset.actorHint); } catch (e) { return; }
+  let html = "";
+  if (desc.quip) html += `<div class="hint-quip"><em>${escapeHtml(desc.quip)}</em></div>`;
+  if (desc.tagline) html += `<div class="hint-tagline"><strong>${escapeHtml(desc.tagline)}</strong></div>`;
+  if (desc.body) html += desc.body.split("\n\n").map(p => `<p>${escapeHtml(p)}</p>`).join("");
+  showTooltip(el, html);
+}
+function showPlainHint(el) {
+  showTooltip(el, `<p>${escapeHtml(el.dataset.hint)}</p>`);
+}
+function showTooltip(anchorEl, html) {
+  const tip = document.getElementById("hover-tooltip");
+  tip.innerHTML = html;
+  tip.style.display = "block";
+  const rect = anchorEl.getBoundingClientRect();
+  tip.style.top = (rect.bottom + 6) + "px";
+  tip.style.left = rect.left + "px";
+  // Clamp to the viewport only after the real size is known - flips
+  // above the anchor if there's no room below, shifts left if it would
+  // overflow the right edge. Both checked independently, not mutually
+  // exclusive.
+  const tipRect = tip.getBoundingClientRect();
+  if (tipRect.right > window.innerWidth - 8) {
+    tip.style.left = Math.max(8, window.innerWidth - tipRect.width - 8) + "px";
+  }
+  if (tipRect.bottom > window.innerHeight - 8) {
+    tip.style.top = Math.max(8, rect.top - tipRect.height - 6) + "px";
+  }
+}
+function hideHint() {
+  document.getElementById("hover-tooltip").style.display = "none";
+}
+
+function skillOrPlain(name, description) {
+  const hintAttrs = actorHintAttrs(description);
   const attr = SKILL_ATTRIBUTE[name];
-  if (!attr) return escapeHtml(name);
-  return `<span class="skill-badge" style="background:${ATTRIBUTE_COLOR[attr]}">${escapeHtml(name)}</span>`;
+  if (!attr) return hintAttrs ? `<span class="hint"${hintAttrs}>${escapeHtml(name)}</span>` : escapeHtml(name);
+  const badgeClass = "skill-badge" + (hintAttrs ? " hint" : "");
+  return `<span class="${badgeClass}"${hintAttrs} style="background:${ATTRIBUTE_COLOR[attr]}">${escapeHtml(name)}</span>`;
 }
 
 let cachedCharacters = null;
@@ -562,6 +681,8 @@ const VIEW_CONTAINERS = {
   "search-orbs": "view-search",
   "search-effects": "view-search",
   "search-checks": "view-search",
+  "search-actors": "view-search",
+  "search-variables": "view-search",
   line: "view-line",
   orb: "view-line",
   updates: "view-updates",
@@ -585,6 +706,8 @@ function render(params) {
   else if (view === "search-orbs") runSearchOrbs(params.q, Number(params.index || 0));
   else if (view === "search-effects") runSearchEffects(params.effect, Number(params.index || 0));
   else if (view === "search-checks") runSearchChecks(params.type, params.skill, params.difficulty_target, Number(params.index || 0));
+  else if (view === "search-actors") runSearchActors(params.q, Number(params.index || 0));
+  else if (view === "search-variables") runSearchVariables(params.q, Number(params.index || 0));
   else if (view === "line") runLineDetail(params.branch, params.id);
   else if (view === "orb") runOrbDetail(params.branch);
   else if (view === "updates") renderUpdates();
@@ -604,6 +727,10 @@ const DOWNLOAD_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // message (see git-commit-and-remote-rules.md's standard release format),
 // newest first. No backend involved; this is genuinely just a changelog.
 const CHANGELOG = [
+  { version: "2.2.0", changes: [
+    "Added hover text for character/object names and game-state flags (Variable[\"...\"]) - shows their real in-game description where one exists, instead of just a raw name",
+    "Added two new browsable sections: \"a character\" and \"a variable\", listing every one with a real description on file",
+  ]},
   { version: "2.1.1", changes: [
     "Fixed two duplicate parallel passive skill checks on the same fork (e.g. branch 569) being silently skipped from the display, with their shared downstream content wrongly surfacing as if it belonged to neither check",
     "Fixed the \"copy line/branch/ORB address\" buttons doing nothing",
@@ -882,6 +1009,32 @@ function renderHome() {
       </p>
     `;
     populateCheckFilters(document.getElementById("home-check-skill"), document.getElementById("home-check-difficulty"));
+  } else if (currentMode === "actors") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <input type="text" id="home-actor-q" placeholder="optional name/description keyword - leave blank to browse all">
+        <button onclick="submitActorSearch()">browse</button>
+      </div>
+      <p class="meta">
+        every named actor in the game's own data - not just the ones
+        who speak dialogue, also doors, objects, and other things with a
+        real description attached.
+      </p>
+    `;
+  } else if (currentMode === "variables") {
+    el.innerHTML = `
+      <div class="toolbar">
+        <input type="text" id="home-variable-q" placeholder="optional name/description keyword">
+        <button onclick="submitVariableSearch()">browse</button>
+      </div>
+      <p class="meta">
+        every game-state flag (Variable["..."]) with a real, human-written
+        description on file - the same ones you see gating a condition or
+        set by an effect elsewhere in this tool, just browsable directly.
+        A keyword is required here - there are too many to browse
+        unfiltered.
+      </p>
+    `;
   }
 }
 
@@ -925,6 +1078,20 @@ function submitBranchLookup() {
 function submitOrbSearch() {
   const q = document.getElementById("home-orb-q").value.trim();
   navigate({ view: "search-orbs", q });
+}
+
+function submitActorSearch() {
+  const q = document.getElementById("home-actor-q").value.trim();
+  navigate({ view: "search-actors", q });
+}
+
+function submitVariableSearch() {
+  const q = document.getElementById("home-variable-q").value.trim();
+  // Unlike actors (343 total, fine to browse unfiltered), there are
+  // 7,823 real variable descriptions - a keyword is required so this
+  // never accidentally becomes a giant unfiltered dump.
+  if (!q) { alert("enter a keyword - there are too many variables to browse unfiltered"); return; }
+  navigate({ view: "search-variables", q });
 }
 
 function submitEffectSearch() {
@@ -1055,6 +1222,49 @@ function runSearchOrbs(q, index) {
             </div>
             <div><strong>${escapeHtml(b.title || "(untitled)")}</strong></div>
             ${b.description ? `<div class="meta">${escapeHtml(b.description)}</div>` : ""}
+          </div>
+        `,
+  });
+}
+
+function runSearchActors(q, index) {
+  return runSearch({
+    endpoint: "search/actors",
+    params: buildSearchParams({ always: { index }, optional: { q } }),
+    viewParams: (i) => ({ view: "search-actors", q, index: i }),
+    loadingText: "loading...",
+    renderItem: (a) => `
+          <div class="result-item">
+            <div><strong>${skillOrPlain(a.name)}</strong></div>
+            ${actorDescriptionHtml(a.description)}
+          </div>
+        `,
+  });
+}
+
+// {quip, tagline, body} or null (see main.py's _parse_actor_description) -
+// shown inline here (a search result), not as a hover - same structure,
+// just always visible instead of on-demand.
+function actorDescriptionHtml(desc) {
+  if (!desc) return `<div class="meta">(no description on file)</div>`;
+  let html = "";
+  if (desc.quip) html += `<div class="hint-quip"><em>${escapeHtml(desc.quip)}</em></div>`;
+  if (desc.tagline) html += `<div class="hint-tagline">${escapeHtml(desc.tagline)}</div>`;
+  if (desc.body) html += desc.body.split("\n\n").map(p => `<div>${escapeHtml(p)}</div>`).join("");
+  return html;
+}
+
+function runSearchVariables(q, index) {
+  return runSearch({
+    endpoint: "search/variables",
+    params: buildSearchParams({ always: { index }, optional: { q } }),
+    viewParams: (i) => ({ view: "search-variables", q, index: i }),
+    loadingText: "searching...",
+    renderItem: (v) => `
+          <div class="result-item">
+            <div><code>${escapeHtml(v.name)}</code></div>
+            <div>${escapeHtml(v.description)}</div>
+            <div class="meta">starts as ${escapeHtml(v.initial_value ?? "?")}</div>
           </div>
         `,
   });
@@ -1324,9 +1534,9 @@ function renderNodeHtml(entry, branchId, showCopyLink, extraConditions) {
     `<button class="explore-btn" onclick="copyToClipboard(lineAddressUrl(${branchId}, ${entry.dentry_id}), this)">copy line address</button>`;
   let html = `<div class="node ${entry.is_player_choice ? "you" : ""}">`;
   html += `<div class="meta">branch ${branchId} / line ${entry.dentry_id}${copyLink}</div>`;
-  html += `<div class="speaker">${skillOrPlain(entry.speaker || "?")}</div>`;
+  html += `<div class="speaker">${skillOrPlain(entry.speaker || "?", entry.speaker_description)}</div>`;
   if (entry.condition) {
-    html += `<div class="condition">shown only if <code>${escapeHtml(entry.condition)}</code></div>`;
+    html += `<div class="condition">shown only if <code>${variableRefHtml(entry.condition)}</code></div>`;
   }
   // Conditions gating this line weren't necessarily on the line's own
   // conditionstring - they're often on an intermediate system/junction
@@ -1338,10 +1548,10 @@ function renderNodeHtml(entry, branchId, showCopyLink, extraConditions) {
   // memory of how it got there). Threading them through as extraConditions
   // keeps them visible after commit, not just before.
   if (extraConditions && extraConditions.length) {
-    html += `<div class="condition">reached only if ` + extraConditions.map(c => `<code>${escapeHtml(c)}</code>`).join(" and ") + `</div>`;
+    html += `<div class="condition">reached only if ` + extraConditions.map(c => `<code>${variableRefHtml(c)}</code>`).join(" and ") + `</div>`;
   }
   if (entry.effect) {
-    html += `<div class="effect">effect: <code>${escapeHtml(entry.effect)}</code></div>`;
+    html += `<div class="effect">effect: <code>${variableRefHtml(entry.effect)}</code></div>`;
   }
   // A skill "speaking" unprompted (passive_check) is identical to any other
   // entry in every other way - same speaker/text/condition/effect handling
@@ -1394,7 +1604,7 @@ function renderNodeHtml(entry, branchId, showCopyLink, extraConditions) {
                 ? `<button class="voice-play-btn" title="play voice line" `
                   + `onclick="playVoiceLine(${branchId}, ${entry.dentry_id}, this, ${i})">&#9654;</button>`
                 : "";
-              return `<li>${altBtn}if <code>${escapeHtml(a.condition)}</code>: ${escapeHtml(a.text)}</li>`;
+              return `<li>${altBtn}if <code>${variableRefHtml(a.condition)}</code>: ${escapeHtml(a.text)}</li>`;
             }).join("")
           + `</ul></div>`;
   }
@@ -1644,7 +1854,7 @@ function renderOptions(options) {
     // choice. Kept separate from the outcome tag, which already conveys
     // the check-pass/fail gate specifically.
     const condHtml = (o.conditions && o.conditions.length)
-      ? `<div class="opt-condition">requires: ` + o.conditions.map(c => `<code>${escapeHtml(c)}</code>`).join(" and ") + `</div>`
+      ? `<div class="opt-condition">requires: ` + o.conditions.map(c => `<code>${variableRefHtml(c)}</code>`).join(" and ") + `</div>`
       : "";
     // Badges (real check or passive check) are shown ONLY on the actual
     // line they belong to, never previewed on an unrelated option button -
