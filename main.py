@@ -138,7 +138,7 @@ def get_docker_gateway_ip() -> str | None:
 # /database/download, so a download always hands out the exact original
 # file a self-hoster substituted, malformed cells and all - protecting
 # the original file, even if it's malformed, is a deliberate design call
-# (2026-08-25), not an oversight.
+# not an oversight.
 DATABASE_URL = "sqlite+aiosqlite:///./db/OptimizedDE.db"
 SEARCH_DATABASE_URL = "sqlite+aiosqlite:///./db/OptimizedDE.db"
 _SOURCE_DB_PATH = Path("db/DiscoElysium.db")
@@ -210,7 +210,7 @@ def _normalize_numeric_columns(conn: sqlite3.Connection) -> None:
 # mechanism, the practical fix is the same: flip the sign so a positive
 # value here always means "green, helps the player," matching what a
 # person looking at this data (or the real game) would expect - a
-# deliberate call (2026-08-25), not something to leave "technically as
+# deliberate call, not something to leave "technically as
 # extracted."
 def _invert_modifier_signs(conn: sqlite3.Connection) -> None:
     cur = conn.execute("UPDATE modifiers SET modifier = -modifier WHERE modifier IS NOT NULL")
@@ -309,57 +309,70 @@ def _parse_actor_description(raw: str | None) -> dict | None:
     return {"quip": quip, "tagline": tagline, "body": body}
 
 
-# Branch 1428 ("Stage directions test dialogue") is a leftover developer
-# reference table, not real game content - one check per raw difficulty
-# tier index (0-14), purely so a writer could look up what DC each tier
-# maps to (see the DIFFICULTY_TIERS comment above, which is how that
-# mapping was originally confirmed). Verified unreachable from anywhere
-# else in the graph: zero dlinks rows have destinationconversationid=1428
-# with a different originconversationid - every link touching it is
-# internal to itself. Its 15 checks are real, correctly-typed rows though -
-# unlike the boilerplate/type-mismatch cases above, this isn't malformed
-# data, it's a curation call about what belongs in the cross-branch checks
-# browser specifically. Excluding it via a view (checks_curated) rather
-# than deleting the rows means /branches/1428 itself still shows its own
-# check badges correctly when viewed directly - only the aggregate browser
-# (/search/checks, /checks/meta) needs to not treat it as a real in-game
-# check.
-_TEST_ONLY_BRANCH_IDS = {1428}
+# "Stage directions test dialogue" is a leftover developer reference
+# table, not real game content - one check per raw difficulty tier index
+# (0-14), purely so a writer could look up what DC each tier maps to (see
+# the DIFFICULTY_TIERS comment above, which is how that mapping was
+# originally confirmed). Verified unreachable from anywhere else in the
+# graph: zero dlinks rows point into it from a different branch - every
+# link touching it is internal to itself. Its 15 checks are real,
+# correctly-typed rows though - unlike the boilerplate/type-mismatch
+# cases above, this isn't malformed data, it's a curation call about what
+# belongs in the cross-branch checks browser specifically. Excluding it
+# via a view (checks_curated) rather than deleting the rows means its own
+# branch page still shows its own check badges correctly when viewed
+# directly - only the aggregate browser (/search/checks, /checks/meta)
+# needs to not treat it as a real in-game check.
+#
+# By TITLE, not a hardcoded id - this branch's numeric id
+# (1428 in this project's original Mar 2021 export) is only stable
+# within one specific Chat Mapper export; a newer one (Dec 2021,
+# confirmed) renumbers every branch from scratch. Resolved here, inside
+# the same connection ensure_optimized_db() already has open, since this
+# runs before the dynamic actor-id resolution near the top of the file
+# even exists yet.
+_TEST_ONLY_BRANCH_TITLES = {"Stage directions test dialogue"}
 
 
 def _create_checks_curated_view(conn: sqlite3.Connection) -> None:
-    ids = ",".join(str(i) for i in _TEST_ONLY_BRANCH_IDS)
+    placeholders = ",".join("?" * len(_TEST_ONLY_BRANCH_TITLES))
+    rows = conn.execute(f"SELECT id FROM dialogues WHERE title IN ({placeholders})", tuple(_TEST_ONLY_BRANCH_TITLES)).fetchall()
+    ids = ",".join(str(r[0]) for r in rows) or "-1"  # -1: no matching branch found - exclude nothing rather than error
     conn.execute(f"CREATE VIEW checks_curated AS SELECT * FROM checks WHERE conversationid NOT IN ({ids})")
 
 
 # Confirmed decommissioned duplicate content, not a whole-branch issue -
 # each of these branches otherwise has substantial content that's
-# genuinely, legitimately reachable via its real cross-branch entry point
-# (e.g. 1235 has hundreds of nodes reachable from 1222's incoming links);
+# genuinely, legitimately reachable via its real cross-branch entry point;
 # it's specifically these individual dentries that are stale authoring
 # forks. Each duplicates a checks.flagname that's live and reachable
-# elsewhere, and - checked directly against the untouched source, not
-# assumed - is unreachable both from its own branch's dentry 0 *and* from
-# every one of its branch's real cross-branch entry points, so there's no
-# natural path to any of these regardless of how you arrive:
-#   703/503  dup of 703/53           (YARD / HANGED MAN BULLET, same branch)
-#   1235/2   dup of 1222/20          (BOARDWALK / THE PIGS RED CHECK)
-#   1015/2   dup of 1002/358         (WHIRLING F1 / RHETORIC WC)
-#   1375/19  dup of 1370/534         (TRIBUNAL / LEGITIMACY OF THIS TRIBUNAL)
-#   1376/2   dup of 1370/536         (TRIBUNAL / I GOT TO KNOW THE HANGED MAN)
-#   1403/27  dup of 1380/989         (MEASUREHEAD / FASCHA DQ)
-# A seventh candidate (700/841) was checked and ruled out - it IS reachable
-# from 700's real entry point (dentry 4, where other branches actually
-# link in), just not from dentry 0, which was never its real entry to
-# begin with. Deleted here, before _weld_disconnected_hubs runs, so the
-# weld pass naturally never sees them as something to reconnect.
+# elsewhere, and is unreachable both from its own branch's dentry 0 *and*
+# from every one of its branch's real cross-branch entry points, so
+# there's no natural path to any of these regardless of how you arrive:
+#   627/147  dup of 627/199          (YARD / HANGED MAN BULLET, same branch)
+#   280/160  dup of 553/79           (BOARDWALK / THE PIGS RED CHECK)
+#   810/381  dup of 640/392          (WHIRLING F1 / RHETORIC WC)
+#   822/22   dup of 537/2            (TRIBUNAL / LEGITIMACY OF THIS TRIBUNAL)
+#   823/35   dup of 537/564          (TRIBUNAL / I GOT TO KNOW THE HANGED MAN)
+#   850/70   dup of 381/241          (MEASUREHEAD / FASCHA DQ)
+# Re-derived against a newer Chat Mapper export (Dec 2021,
+# vs this project's original Mar 2021 one) whose every id was renumbered
+# from scratch - matched by content (branch title + line text + actor
+# name + condition), not by the old numbers, which no longer mean
+# anything in this file. One of the six (the YARD/HANGED MAN BULLET pair)
+# had two textually-identical candidates in the new export too - resolved
+# the same way the original analysis did: the real dentry has live
+# incoming links, the decommissioned one has none at all, checked
+# directly, not assumed. Deleted here, before _weld_disconnected_hubs
+# runs, so the weld pass naturally never sees them as something to
+# reconnect.
 _DECOMMISSIONED_DENTRIES = {
-    (703, 503),
-    (1235, 2),
-    (1015, 2),
-    (1375, 19),
-    (1376, 2),
-    (1403, 27),
+    (627, 147),
+    (280, 160),
+    (810, 381),
+    (822, 22),
+    (823, 35),
+    (850, 70),
 }
 
 
@@ -385,8 +398,8 @@ def _delete_decommissioned_dentries(conn: sqlite3.Connection) -> None:
 # each: the jump node's *only* predecessor within its own branch is
 # exactly this check dentry, and the check is real and correctly typed.
 #
-# The system hub each of these branches has locally (e.g. 1375's dentry
-# 20) is NOT being removed or bypassed - it's load-bearing for legitimate
+# The system hub each of these branches has locally (e.g. 822's own
+# local junction) is NOT being removed or bypassed - it's load-bearing for legitimate
 # in-branch looping once you're actually inside the conversation (several
 # threads reconverging on the same point without leaving the branch), and
 # the real cross-branch link chain into it (check -> jump node -> this
@@ -397,17 +410,22 @@ def _delete_decommissioned_dentries(conn: sqlite3.Connection) -> None:
 # entering through the local hub as if it were a real, unconditional
 # starting point. This table backs exactly that - consulted only by
 # runBranchExplorer's no-`at` path and restartBranch(), nowhere else.
+# Re-derived against a newer Chat Mapper export (Dec 2021,
+# vs this project's original Mar 2021 one) whose every id was renumbered
+# from scratch - matched by content (branch title + line text + actor
+# name + condition), not by the old numbers. All 10 resolved to exactly
+# one unambiguous candidate each in the new export.
 _BRANCH_TRUE_ENTRY = {
-    616: (605, 198),
-    1015: (1002, 358),
-    1025: (1002, 29),
-    1375: (1370, 534),
-    1376: (1370, 536),
-    1186: (995, 660),
-    1371: (1370, 389),
-    1373: (1370, 8),
-    1374: (1370, 12),
-    1377: (1370, 135),
+    1086: (383, 181),
+    810: (640, 392),
+    814: (640, 349),
+    822: (537, 2),
+    823: (537, 564),
+    5: (29, 233),
+    818: (537, 490),
+    820: (537, 240),
+    821: (537, 470),
+    824: (537, 477),
 }
 
 # The specific local junction each of the 10 branches above would otherwise
@@ -415,17 +433,29 @@ _BRANCH_TRUE_ENTRY = {
 # jump lands on) - suppressed in _weld_disconnected_hubs since it's not
 # actually unreachable, just unreachable *from this branch's own dentry
 # 0*, which _BRANCH_TRUE_ENTRY now handles correctly instead.
+#
+# INCOMPLETE after re-derivation against the newer export - only 3 of the original
+# 10 could be re-matched with confidence. Those 3 were real content lines
+# with distinctive dialoguetext, matched precisely by content the same
+# way as everything else in this file. The other 7 are is_group system
+# nodes with empty conditionstring and a generic/placeholder actor - no
+# distinguishing content at all, and confirmed NOT reachable via a direct
+# cross-branch dlink from the corresponding check either (checked
+# directly: 640/392's own outgoing links stay entirely within its own
+# branch) - the original "jump" mechanism connecting them is evidently
+# script/flag-based, not a graph edge, so it can't be traced structurally
+# either. Each of those 7 branches now has MULTIPLE weld candidates in
+# the new export (unlike a clean single pick), and picking the wrong one
+# risks silently suppressing a legitimately-needed weld instead of the
+# intended redundant one - safer to under-suppress (a minor, cosmetic
+# extra option in the branch explorer for these 7 branches specifically)
+# than guess wrong. Needs the same kind of manual, careful analysis the
+# original 10 got, not automated re-derivation - left as a known gap
+# rather than a silent wrong guess.
 _SUPPRESSED_WELD_TARGETS = {
-    (616, 8),
-    (1015, 3),
-    (1025, 682),
-    (1375, 20),
-    (1376, 3),
-    (1186, 4),
-    (1371, 64),
-    (1373, 2),
-    (1374, 2),
-    (1377, 14),
+    (820, 24),  # was 1373/2 (TRIBUNAL / YOU ARE DRUNK!)
+    (821, 30),  # was 1374/2 (TRIBUNAL / JOYCE WOULDN'T LIKE THIS!)
+    (824, 4),   # was 1377/14 (TRIBUNAL / WHERE IS KLAASJE?)
 }
 
 
@@ -700,6 +730,43 @@ def ensure_optimized_db() -> None:
 
 ensure_optimized_db()
 
+# The 24 skill actors + "You" (the player), resolved by NAME instead of a
+# hardcoded id - a numeric actor id is only stable within one specific
+# Chat Mapper export. Confirmed the hard way: comparing
+# against a newer export (Dec 2021 vs this project's original Mar 2021
+# one) showed every single actor id renumbered from scratch, even though
+# the *names* and the relative structure (You immediately followed by
+# the 24 skills, contiguous) stayed identical. Queried once, synchronously,
+# against the freshly-built OptimizedDE.db - same timing as
+# ensure_optimized_db() itself, before the async engine exists.
+_SKILL_NAMES = (
+    "Conceptualization", "Logic", "Encyclopedia", "Rhetoric", "Drama", "Visual Calculus",
+    "Empathy", "Inland Empire", "Volition", "Authority", "Suggestion", "Esprit de Corps",
+    "Endurance", "Physical Instrument", "Shivers", "Pain Threshold", "Electrochemistry",
+    "Half Light", "Hand/Eye Coordination", "Reaction Speed", "Savoir Faire", "Interfacing",
+    "Composure", "Perception",
+)
+
+
+def _resolve_key_actor_ids() -> tuple[int, set[int]]:
+    conn = sqlite3.connect(_OPTIMIZED_DB_PATH)
+    try:
+        you_row = conn.execute("SELECT id FROM actors WHERE name = 'You'").fetchone()
+        if you_row is None:
+            raise RuntimeError("no actor named 'You' found in actors - is_player_choice can't be determined")
+        placeholders = ",".join("?" * len(_SKILL_NAMES))
+        skill_rows = conn.execute(f"SELECT id FROM actors WHERE name IN ({placeholders})", _SKILL_NAMES).fetchall()
+        if len(skill_rows) != len(_SKILL_NAMES):
+            found = {r[0] for r in conn.execute(f"SELECT name FROM actors WHERE name IN ({placeholders})", _SKILL_NAMES)}
+            missing = set(_SKILL_NAMES) - found
+            raise RuntimeError(f"expected {len(_SKILL_NAMES)} skill actors by name, missing: {missing}")
+        return you_row[0], {r[0] for r in skill_rows}
+    finally:
+        conn.close()
+
+
+YOU_ACTOR_ID, SKILL_ACTOR_IDS = _resolve_key_actor_ids()
+
 engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -809,7 +876,7 @@ async def add_timing_header(request: Request, call_next):
 # per-minute throttle no real listener would ever notice, plus a much
 # coarser per-hour tripwire that outright bans an IP for an hour once
 # tripped - see config.yaml's audio_playback section for the actual
-# numbers (2026-08-27).
+# numbers.
 _VOICE_DB_PATH = Path("db/voice_archive.db")
 
 
@@ -819,7 +886,7 @@ def _load_voiced_actor_names() -> frozenset[str]:
     play button should render at all, not just whether *this exact*
     dentry has audio.
 
-    Why per-actor rather than per-dentry (2026-08-27): "You" (the
+    Why per-actor rather than per-dentry: "You" (the
     player) alone accounts for 23,475 real dialogue lines with zero
     voice-over - the game was never going to record VO for player
     choices - plus another ~230 lines spread across 33 minor background
@@ -939,7 +1006,7 @@ def _voice_row(branch_id: int, dentry_id: int, alt_index: int | None = None):
     # connection pool for what both DBs it'd otherwise share are already
     # serving fine.
     #
-    # alt_index (2026-08-28, frontend rewrite): an alternates-table row can
+    # alt_index (frontend rewrite): an alternates-table row can
     # have its own distinct recording, separate from the parent line's -
     # voice_files.alt_index is the 0-based ordinal embedded directly in
     # the original game asset filename itself (e.g.
@@ -1024,7 +1091,7 @@ async def get_voice_line_alt(request: Request, branch_id: int, dentry_id: int, a
 
 class _NoStoreStaticFiles(StaticFiles):
     """Same no-store reasoning as root()'s index.html below - the frontend
-    rewrite (2026-08-28) splits JS into real files under frontend/, and a
+    rewrite splits JS into real files under frontend/, and a
     plain browser cache serving a stale module after a deploy would be the
     exact same class of bug as the v1.3.3 stale-index.html one, just for a
     file that isn't even the top-level page a refresh normally re-fetches
@@ -1500,18 +1567,18 @@ DIFFICULTY_TIERS = {
     12: ("Very Difficult", 15), 13: ("Heroic", 17), 14: ("Impossible", 19),
 }
 
-# actors 389-412 are the 24 skills themselves acting as speakers (unprompted
-# "passive" commentary - Volition chiming in unbidden, Shivers narrating the
-# city, etc.), confirmed contiguous and complete against the actors table.
-# These lines never carry a checks table row (verified: 0 of 14,130 skill-
-# actor lines have hascheck=1) - hascheck/checks is only for player-facing
-# checks initiated by picking a dialogue option. Instead dentries.difficultypass
+# The 24 skills themselves acting as speakers (unprompted "passive"
+# commentary - Volition chiming in unbidden, Shivers narrating the city,
+# etc.) - SKILL_ACTOR_IDS itself is resolved by name near the top of the
+# file (see _resolve_key_actor_ids), not hardcoded here. These lines
+# never carry a checks table row (verified: 0 of 14,130 skill-actor lines
+# have hascheck=1) - hascheck/checks is only for player-facing checks
+# initiated by picking a dialogue option. Instead dentries.difficultypass
 # is set directly on ~68% of them (9,544 of 14,130) with the same 0-14 tier
 # index as checks.difficulty - this is the passive trigger threshold: roughly
 # "your skill needs to clear this DC for the line to fire at all", derived
 # from cross-referencing branch 142's Volition/Half Light/Physical Instrument/
 # Composure lines against DIFFICULTY_TIERS and finding it lines up exactly.
-SKILL_ACTOR_IDS = set(range(389, 413))
 
 
 _VARIABLE_REF_RE = re.compile(r'Variable\["([^"]+)"\]')
@@ -1630,7 +1697,7 @@ def _build_entry(row, check_row, modifier_rows, alternate_rows, actor_descriptio
         "speaker": row.speaker,
         "text": row.dialoguetext,
         "is_system": is_system,
-        "is_player_choice": row.actor == 387,  # "You" - see actors table
+        "is_player_choice": row.actor == YOU_ACTOR_ID,
         "has_voice_actor": row.speaker in VOICED_ACTOR_NAMES,
         "condition": condition,
         "effect": effect,

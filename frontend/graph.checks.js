@@ -4,6 +4,11 @@
 // Named *.checks.js, not test*, because .gitignore has a bare "test*"
 // pattern that would silently swallow anything starting with "test".
 //
+// Branch/dentry numbers below were re-derived after the Dec 2021 database
+// migration renumbered every id from scratch - matched by content
+// (title/dialoguetext/actor name/condition), not carried over from the old
+// ids. See the old numbers in each comment for traceability.
+//
 // Run in a browser at /frontend/graph.checks.html (fetches real branch
 // data from the same-origin API - no mock fixtures, these assert against
 // the actual live database) or with node (see runNode() below) as long as
@@ -12,8 +17,8 @@
 import { indexBranch, nextRealSteps, passiveCheckIsExclusive, resolveOptions, resolveChain } from "./graph.js";
 import { resolvePrevReal } from "./back.js";
 
-// v0 of the rewrite briefly had a real bug here: resolveOptions from 5
-// jumped straight to [292, 307], silently never surfacing 291 as its own
+// v0 of the rewrite briefly had a real bug here: resolveOptions from 181
+// jumped straight to [217, 399], silently never surfacing 12 as its own
 // step at all - because a lone passive check with no sibling is trivially
 // "not exclusive", and the old code treated "not exclusive" as "flatten
 // away" even with nothing to flatten past. Caught by hand in the demo
@@ -42,140 +47,141 @@ async function fetchIndex(apiBase, branchId) {
 export async function runChecks(apiBase) {
   results.length = 0;
 
-  // --- 1370/291 vs 292: the motivating exclusivity-rule case ---------
-  // 291 (Volition 10) -> 293 (junction) -> {294 -> 292 (Empathy 2) -> 296
-  // -> {297,298}} vs {295 -> 307}. 292's downstream is only reachable
-  // through 292 - not accessible via the bypass sibling (295->307) - so
-  // 292 must be exclusive (eligible option). 291 itself has no sibling at
+  // --- 537/12 vs 217: the motivating exclusivity-rule case (was 1370/291 vs 292)
+  // 12 (Volition 10) -> 218 (junction) -> {219 -> 217 (Empathy 2) -> 263
+  // -> {264,265}} vs {220 -> 399}. 217's downstream is only reachable
+  // through 217 - not accessible via the bypass sibling (220->399) - so
+  // 217 must be exclusive (eligible option). 12 itself has no sibling at
   // its own fork point (single link forward from its predecessor) so it
   // must never be exclusive, regardless of what's downstream of it.
-  const idx1370 = await fetchIndex(apiBase, 1370);
+  const idx537 = await fetchIndex(apiBase, 537);
 
-  await check("292 is exclusive (gates 296/297/298, bypass sibling 295->307 never reaches them)", () => {
-    const forkSteps = nextRealSteps(idx1370, 293); // the junction both 294 and 295 hang off
-    const checkStep = forkSteps.find(s => s.dentryId === 292 || (idx1370.entriesById[s.dentryId] && false));
-    // 294 is itself a system node collapsed away by nextRealSteps, so the
-    // step landing on 292 is what we expect here directly.
-    const step292 = forkSteps.find(s => s.type === "line" && s.dentryId === 292);
-    assert(step292, `expected a step landing on 292, got: ${JSON.stringify(forkSteps)}`);
-    const siblings = forkSteps.filter(s => s !== step292);
-    assert(passiveCheckIsExclusive(idx1370, step292, siblings), "292 should be exclusive");
+  await check("217 is exclusive (gates 263/264/265, bypass sibling 220->399 never reaches them)", () => {
+    const forkSteps = nextRealSteps(idx537, 218); // the junction both 219 and 220 hang off
+    const checkStep = forkSteps.find(s => s.dentryId === 217 || (idx537.entriesById[s.dentryId] && false));
+    // 219 is itself a system node collapsed away by nextRealSteps, so the
+    // step landing on 217 is what we expect here directly.
+    const step217 = forkSteps.find(s => s.type === "line" && s.dentryId === 217);
+    assert(step217, `expected a step landing on 217, got: ${JSON.stringify(forkSteps)}`);
+    const siblings = forkSteps.filter(s => s !== step217);
+    assert(passiveCheckIsExclusive(idx537, step217, siblings), "217 should be exclusive");
   });
 
-  await check("291 has no siblings at its own fork point (resolveOptions never even calls passiveCheckIsExclusive here - single-hop short-circuit)", () => {
-    // 291's own predecessor links straight to it with nothing else -
+  await check("12 has no siblings at its own fork point (resolveOptions never even calls passiveCheckIsExclusive here - single-hop short-circuit)", () => {
+    // 12's own predecessor links straight to it with nothing else -
     // confirm via the real link table rather than assuming. Direct calls
     // to passiveCheckIsExclusive([]) now correctly return true (no true
-    // bypass sibling = exclusive by definition, per the 569 fix below) -
+    // bypass sibling = exclusive by definition, per the 1012 fix below) -
     // but that path is never actually exercised for a real single-hop
     // step in practice, since resolveOptions short-circuits on
     // steps.length === 1 before ever calling passiveCheckIsExclusive at
     // all (see resolveOptions' own docs) - this check only confirms the
-    // no-sibling precondition holds for 291, not a behavior of the
-    // resolver itself (see the "does NOT skip past 291" check for that).
-    const preSteps = nextRealSteps(idx1370, 5); // 5 -> 291 directly, per dlinks
-    const step291 = preSteps.find(s => s.type === "line" && s.dentryId === 291);
-    assert(step291, `expected a step landing on 291 from 5, got: ${JSON.stringify(preSteps)}`);
-    const siblings = preSteps.filter(s => s !== step291);
-    assert(siblings.length === 0, `expected no siblings for 291, got: ${JSON.stringify(siblings)}`);
+    // no-sibling precondition holds for 12, not a behavior of the
+    // resolver itself (see the "does NOT skip past 12" check for that).
+    const preSteps = nextRealSteps(idx537, 181); // 181 -> 12 directly, per dlinks
+    const step12 = preSteps.find(s => s.type === "line" && s.dentryId === 12);
+    assert(step12, `expected a step landing on 12 from 181, got: ${JSON.stringify(preSteps)}`);
+    const siblings = preSteps.filter(s => s !== step12);
+    assert(siblings.length === 0, `expected no siblings for 12, got: ${JSON.stringify(siblings)}`);
   });
 
-  await check("resolveOptions(5) does NOT skip past 291 - it's the sole single-hop step, not a fork to flatten", () => {
-    const options = resolveOptions(idx1370, 5, new Set([5]));
-    assert(options.length === 1, `expected exactly one step from 5, got: ${JSON.stringify(options)}`);
-    assert(options[0].type === "line" && options[0].dentryId === 291, `expected step to land on 291 itself, got: ${JSON.stringify(options[0])}`);
-    assert((options[0].via || []).length === 0, `291 should have no via - it's the real next step, not flattened-through content`);
+  await check("resolveOptions(181) does NOT skip past 12 - it's the sole single-hop step, not a fork to flatten", () => {
+    const options = resolveOptions(idx537, 181, new Set([181]));
+    assert(options.length === 1, `expected exactly one step from 181, got: ${JSON.stringify(options)}`);
+    assert(options[0].type === "line" && options[0].dentryId === 12, `expected step to land on 12 itself, got: ${JSON.stringify(options[0])}`);
+    assert((options[0].via || []).length === 0, `12 should have no via - it's the real next step, not flattened-through content`);
   });
 
-  await check("resolveOptions(293) surfaces 292 as a real option, flattens 295's junction straight to 307", () => {
-    const options = resolveOptions(idx1370, 293, new Set([293]));
+  await check("resolveOptions(218) surfaces 217 as a real option, flattens 220's junction straight to 399", () => {
+    const options = resolveOptions(idx537, 218, new Set([218]));
     const dentryIds = options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
     assert(
-      dentryIds.length === 2 && dentryIds[0] === 292 && dentryIds[1] === 307,
-      `expected exactly [292, 307], got: ${JSON.stringify(dentryIds)} (full: ${JSON.stringify(options)})`
+      dentryIds.length === 2 && dentryIds[0] === 217 && dentryIds[1] === 399,
+      `expected exactly [217, 399], got: ${JSON.stringify(dentryIds)} (full: ${JSON.stringify(options)})`
     );
   });
 
-  // --- 292's own outcome-contradiction promotion: its effect sets
-  // plaza.tribunal_halflight_escalate=true, and 298 (downstream of 292)
-  // gates on that exact variable being false, landing on 308
-  // ("...*PIGFUCK!*..."). Same real pattern as 569 below, found in the
+  // --- 217's own outcome-contradiction promotion: its effect sets
+  // plaza.tribunal_halflight_escalate=true, and 265 (downstream of 217)
+  // gates on that exact variable being false, landing on 425
+  // ("...*PIGFUCK!*..."). Same real pattern as 1012 below, found in the
   // SAME branch this whole exclusivity rule was originally built around -
   // confirmed via the real link/condition table, not assumed. Promotion
-  // is scoped to exactly 292's own downstream (once you've committed to
-  // viewing 292 itself) - NOT pulled up to 293's/291's own level, where
-  // 292 is merely a sibling of the unrelated 307 and nothing about 292's
+  // is scoped to exactly 217's own downstream (once you've committed to
+  // viewing 217 itself) - NOT pulled up to 218's/12's own level, where
+  // 217 is merely a sibling of the unrelated 399 and nothing about 217's
   // own effect is settled yet.
-  await check("resolveOptions(292) promotes 308 alongside its own normal continuation", () => {
-    const options = resolveOptions(idx1370, 292, new Set([292]));
+  await check("resolveOptions(217) promotes 425 alongside its own normal continuation", () => {
+    const options = resolveOptions(idx537, 217, new Set([217]));
     const dentryIds = options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
-    assert(dentryIds.includes(308), `expected 308 present, got: ${JSON.stringify(dentryIds)}`);
+    assert(dentryIds.includes(425), `expected 425 present, got: ${JSON.stringify(dentryIds)}`);
   });
-  await check("resolveOptions(291)/resolveOptions(293) do NOT show 308 - 292's own effect isn't settled until you're on 292 itself", () => {
-    const from291 = resolveOptions(idx1370, 291, new Set([291])).filter(o => o.type === "line").map(o => o.dentryId);
-    const from293 = resolveOptions(idx1370, 293, new Set([293])).filter(o => o.type === "line").map(o => o.dentryId);
-    assert(!from291.includes(308), `291 should not show 308 yet, got: ${JSON.stringify(from291)}`);
-    assert(!from293.includes(308), `293 should not show 308 yet, got: ${JSON.stringify(from293)}`);
+  await check("resolveOptions(12)/resolveOptions(218) do NOT show 425 - 217's own effect isn't settled until you're on 217 itself", () => {
+    const from12 = resolveOptions(idx537, 12, new Set([12])).filter(o => o.type === "line").map(o => o.dentryId);
+    const from218 = resolveOptions(idx537, 218, new Set([218])).filter(o => o.type === "line").map(o => o.dentryId);
+    assert(!from12.includes(425), `12 should not show 425 yet, got: ${JSON.stringify(from12)}`);
+    assert(!from218.includes(425), `218 should not show 425 yet, got: ${JSON.stringify(from218)}`);
   });
 
-  // --- 569/286: two parallel duplicate passive checks, no true bypass -
-  // real bug arda caught live (v2.1.0): both 289 and 6 were silently
-  // flattened away (each treated the OTHER as a "bypass"), leaking their
-  // shared downstream (23/26/290) up as if it belonged to neither check.
-  const idx569 = await fetchIndex(apiBase, 569);
-  await check("569: both duplicate passive checks (289, 6) are exclusive - no true bypass exists", () => {
-    const forkSteps = nextRealSteps(idx569, 286);
+  // --- 1012/229: two parallel duplicate passive checks, no true bypass -
+  // (was 569/286) real bug caught live (v2.1.0): both 141 and 77
+  // were silently flattened away (each treated the OTHER as a "bypass"),
+  // leaking their shared downstream (233/177/303) up as if it belonged to
+  // neither check.
+  const idx1012 = await fetchIndex(apiBase, 1012);
+  await check("1012: both duplicate passive checks (77, 141) are exclusive - no true bypass exists", () => {
+    const forkSteps = nextRealSteps(idx1012, 229);
     const ids = forkSteps.filter(s => s.type === "line").map(s => s.dentryId).sort((a, b) => a - b);
-    assert(JSON.stringify(ids) === JSON.stringify([6, 289]), `expected fork [6, 289], got: ${JSON.stringify(ids)}`);
+    assert(JSON.stringify(ids) === JSON.stringify([77, 141]), `expected fork [77, 141], got: ${JSON.stringify(ids)}`);
     for (const step of forkSteps) {
       const siblings = forkSteps.filter(s => s !== step);
-      assert(passiveCheckIsExclusive(idx569, step, siblings), `expected dentry ${step.dentryId} to be exclusive (no true bypass sibling)`);
+      assert(passiveCheckIsExclusive(idx1012, step, siblings), `expected dentry ${step.dentryId} to be exclusive (no true bypass sibling)`);
     }
   });
-  await check("resolveOptions(286) surfaces BOTH 289 and 6 as their own options, not their shared downstream", () => {
-    const options = resolveOptions(idx569, 286, new Set([286]));
+  await check("resolveOptions(229) surfaces BOTH 77 and 141 as their own options, not their shared downstream", () => {
+    const options = resolveOptions(idx1012, 229, new Set([229]));
     const ids = options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
-    assert(JSON.stringify(ids) === JSON.stringify([6, 289]), `expected [6, 289], got: ${JSON.stringify(ids)} (full: ${JSON.stringify(options)})`);
+    assert(JSON.stringify(ids) === JSON.stringify([77, 141]), `expected [77, 141], got: ${JSON.stringify(ids)} (full: ${JSON.stringify(options)})`);
   });
 
-  // --- 569's third check (290, Interfacing): the full diagnosis -
-  // 289/6's own SetVariableValue sets the exact variable 14's downstream
-  // fork (15/16) branches on, so 290 (16's branch) is the real "neither
+  // --- 1012's third check (303, Interfacing): the full diagnosis - (was 569's 290)
+  // 141/77's own SetVariableValue sets the exact variable 142's downstream
+  // fork (143/144) branches on, so 303 (144's branch) is the real "neither
   // Encyclopedia check fired" outcome, not unrelated duplicate content.
-  // Scoped correctly: only appears once you've committed to 289 or 6
-  // (their own effect is what settles the variable), never at 286's own
+  // Scoped correctly: only appears once you've committed to 141 or 77
+  // (their own effect is what settles the variable), never at 229's own
   // level (where neither has fired yet). Also confirms the specific
-  // wrongly-leaked options (10/7/11/38/78, only reachable via 290's own
-  // downstream) are gone from 289/6's own level now.
-  await check("resolveOptions(289) and resolveOptions(6) both promote 290, with no leaked 10/7/11/38/78", () => {
-    for (const start of [289, 6]) {
-      const options = resolveOptions(idx569, start, new Set([start]));
+  // wrongly-leaked options (only reachable via 303's own downstream) are
+  // gone from 141/77's own level now.
+  await check("resolveOptions(141) and resolveOptions(77) both promote 303, with no leaked downstream", () => {
+    for (const start of [141, 77]) {
+      const options = resolveOptions(idx1012, start, new Set([start]));
       const ids = options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
-      assert(JSON.stringify(ids) === JSON.stringify([23, 26, 290]),
-        `expected [23, 26, 290] from ${start}, got: ${JSON.stringify(ids)}`);
+      assert(JSON.stringify(ids) === JSON.stringify([177, 233, 303]),
+        `expected [177, 233, 303] from ${start}, got: ${JSON.stringify(ids)}`);
     }
   });
 
-  await check("resolveChain(5) collects [5, 291] then stops on the real 292/307 fork", () => {
-    const chain = resolveChain(idx1370, 5);
+  await check("resolveChain(181) collects [181, 12] then stops on the real 217/399 fork", () => {
+    const chain = resolveChain(idx537, 181);
     const ids = chain.collected.map(c => c.dentryId);
-    assert(JSON.stringify(ids) === JSON.stringify([5, 291]), `expected [5, 291], got: ${JSON.stringify(ids)}`);
+    assert(JSON.stringify(ids) === JSON.stringify([181, 12]), `expected [181, 12], got: ${JSON.stringify(ids)}`);
     const dentryIds = chain.options.filter(o => o.type === "line").map(o => o.dentryId).sort((a, b) => a - b);
-    assert(JSON.stringify(dentryIds) === JSON.stringify([292, 307]), `expected fork [292, 307], got: ${JSON.stringify(dentryIds)}`);
+    assert(JSON.stringify(dentryIds) === JSON.stringify([217, 399]), `expected fork [217, 399], got: ${JSON.stringify(dentryIds)}`);
   });
 
-  await check("resolveChain is stateless — choosing 292 next doesn't carry over 5/291 from the previous chain", () => {
+  await check("resolveChain is stateless — choosing 217 next doesn't carry over 181/12 from the previous chain", () => {
     // Simulates exactly what the demo page's per-click bug got wrong:
     // each choice must start a genuinely fresh chain from its own anchor,
     // never an accumulating transcript of everything walked before it.
-    const first = resolveChain(idx1370, 5);
-    const chosen = first.options.find(o => o.type === "line" && o.dentryId === 292);
-    assert(chosen, "expected 292 among the first chain's options");
-    const second = resolveChain(idx1370, chosen.dentryId);
+    const first = resolveChain(idx537, 181);
+    const chosen = first.options.find(o => o.type === "line" && o.dentryId === 217);
+    assert(chosen, "expected 217 among the first chain's options");
+    const second = resolveChain(idx537, chosen.dentryId);
     const secondIds = second.collected.map(c => c.dentryId);
-    assert(!secondIds.includes(5) && !secondIds.includes(291),
+    assert(!secondIds.includes(181) && !secondIds.includes(12),
       `second chain must not carry over the first chain's lines, got: ${JSON.stringify(secondIds)}`);
-    assert(secondIds[0] === 292, `second chain should start at 292 itself, got: ${JSON.stringify(secondIds)}`);
+    assert(secondIds[0] === 217, `second chain should start at 217 itself, got: ${JSON.stringify(secondIds)}`);
   });
 
   // --- graph-native "back" (back.js) ---------------------------------
@@ -193,30 +199,30 @@ export async function runChecks(apiBase) {
     };
   }
 
-  await check("resolvePrevReal(291) is a direct real predecessor, no system hop", async () => {
+  await check("resolvePrevReal(12) is a direct real predecessor, no system hop", async () => {
     const { fetchPredecessors, fetchLineInfo } = makeFetchers(apiBase);
-    const prev = await resolvePrevReal(fetchPredecessors, fetchLineInfo, 1370, 291);
-    assert(prev && prev.branchId === 1370 && prev.dentryId === 5, `expected {1370,5}, got: ${JSON.stringify(prev)}`);
+    const prev = await resolvePrevReal(fetchPredecessors, fetchLineInfo, 537, 12);
+    assert(prev && prev.branchId === 537 && prev.dentryId === 181, `expected {537,181}, got: ${JSON.stringify(prev)}`);
   });
 
-  await check("resolvePrevReal(292) walks back through two system hops (294, 293) to real line 291", async () => {
+  await check("resolvePrevReal(217) walks back through two system hops (219, 218) to real line 12", async () => {
     const { fetchPredecessors, fetchLineInfo } = makeFetchers(apiBase);
-    const prev = await resolvePrevReal(fetchPredecessors, fetchLineInfo, 1370, 292);
-    assert(prev && prev.branchId === 1370 && prev.dentryId === 291, `expected {1370,291}, got: ${JSON.stringify(prev)}`);
+    const prev = await resolvePrevReal(fetchPredecessors, fetchLineInfo, 537, 217);
+    assert(prev && prev.branchId === 537 && prev.dentryId === 12, `expected {537,12}, got: ${JSON.stringify(prev)}`);
   });
 
-  await check("resolvePrevReal cycle guard: 1199/236 doesn't hang walking backward either", async () => {
+  await check("resolvePrevReal cycle guard: 556/407 doesn't hang walking backward either", async () => {
     const { fetchPredecessors, fetchLineInfo } = makeFetchers(apiBase);
-    const prev = await resolvePrevReal(fetchPredecessors, fetchLineInfo, 1199, 236);
+    const prev = await resolvePrevReal(fetchPredecessors, fetchLineInfo, 556, 407);
     assert(prev === null || (typeof prev.branchId === "number" && typeof prev.dentryId === "number"),
       `expected null or a real {branchId,dentryId}, got: ${JSON.stringify(prev)}`);
   });
 
-  // --- 1199/236: genuine graph cycle ---------------------------------
-  await check("1199/236 cycle guard: nextRealSteps terminates and doesn't loop forever", async () => {
-    const idx1199 = await fetchIndex(apiBase, 1199);
-    const steps = nextRealSteps(idx1199, 236);
-    assert(Array.isArray(steps), "nextRealSteps must return an array even when the graph cycles back through 236");
+  // --- 556/407: genuine graph cycle (was 1199/236) --------------------
+  await check("556/407 cycle guard: nextRealSteps terminates and doesn't loop forever", async () => {
+    const idx556 = await fetchIndex(apiBase, 556);
+    const steps = nextRealSteps(idx556, 407);
+    assert(Array.isArray(steps), "nextRealSteps must return an array even when the graph cycles back through 407");
   });
 
   return results;
