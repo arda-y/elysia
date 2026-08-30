@@ -268,6 +268,26 @@ export async function runChecks(apiBase) {
     await checkEffectCssScoping(apiBase);
   });
 
+  // --- /search/variables with no query: alphabetical, paginated --------
+  // v2.3.2: the backend already supported this (q defaults to "", ORDER
+  // BY name, limit 100) - submitVariableSearch() in index.html blocked an
+  // empty query client-side with an alert(), a guard written before this
+  // list had pagination and never revisited. Fixed by removing the guard
+  // (index.html only - nothing here to check on that side, this checks
+  // the API contract the fix now actually relies on).
+  await check("/search/variables with empty q returns alphabetically sorted results, capped at 100", async () => {
+    const base = apiBase.replace(/\/+$/, "");
+    const res = await fetch(`${base}/search/variables`);
+    if (!res.ok) throw new Error(`search/variables: ${res.status}`);
+    const data = await res.json();
+    assert(data.limit === 100, `expected limit 100, got: ${data.limit}`);
+    assert(data.results.length === 100, `expected exactly 100 results on an unfiltered first page, got: ${data.results.length}`);
+    assert(data.total > 100, `expected total > 100 (dataset should be large enough for this test to mean anything), got: ${data.total}`);
+    const names = data.results.map(r => r.name);
+    const sorted = [...names].sort();
+    assert(JSON.stringify(names) === JSON.stringify(sorted), "expected results sorted alphabetically by name");
+  });
+
   return results;
 }
 

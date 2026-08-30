@@ -1024,15 +1024,14 @@ function renderHome() {
   } else if (currentMode === "variables") {
     el.innerHTML = `
       <div class="toolbar">
-        <input type="text" id="home-variable-q" placeholder="optional name/description keyword">
+        <input type="text" id="home-variable-q" placeholder="optional keyword - leave blank to browse all, A-Z">
         <button onclick="submitVariableSearch()">browse</button>
       </div>
       <p class="meta">
         every game-state flag (Variable["..."]) with a real, human-written
         description on file - the same ones you see gating a condition or
         set by an effect elsewhere in this tool, just browsable directly.
-        A keyword is required here - there are too many to browse
-        unfiltered.
+        Sorted alphabetically, 100 at a time.
       </p>
     `;
   }
@@ -1087,10 +1086,9 @@ function submitActorSearch() {
 
 function submitVariableSearch() {
   const q = document.getElementById("home-variable-q").value.trim();
-  // Unlike actors (343 total, fine to browse unfiltered), there are
-  // 7,823 real variable descriptions - a keyword is required so this
-  // never accidentally becomes a giant unfiltered dump.
-  if (!q) { alert("enter a keyword - there are too many variables to browse unfiltered"); return; }
+  // 7,846 real variable descriptions - same story as orbs (browsable
+  // unfiltered, paginated 100 at a time, no keyword required). Used to
+  // require one before pagination existed on this list; stale since.
   navigate({ view: "search-variables", q });
 }
 
