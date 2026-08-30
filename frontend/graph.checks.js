@@ -305,6 +305,27 @@ export async function runChecks(apiBase) {
       `expected skill "Perception (Hearing)", got: ${JSON.stringify(entry.passive_check)}`);
   });
 
+  // --- skill_descriptions on the branch response ------------------------
+  // v2.3.4: checkBadgeHtml/passiveCheckBadgeHtml called skillOrPlain(name)
+  // with no description argument at all - the badge line ("passive check
+  // - requires Authority 10 to trigger") never got the hover, unlike the
+  // entry's own speaker line just above it, which does (a real check's
+  // own entry.speaker is always "You", never the skill, so
+  // speaker_description never covers this case either way). Fixed by
+  // embedding a small name-keyed skill_descriptions map on every branch/
+  // line-detail response (main.py's _get_skill_descriptions) for the
+  // frontend to look the skill up in directly, same pattern as
+  // branchData.variables.
+  await check("branches/{id} embeds skill_descriptions, keyed by skill name", async () => {
+    const base = apiBase.replace(/\/+$/, "");
+    const res = await fetch(`${base}/branches/537`);
+    if (!res.ok) throw new Error(`branches/537: ${res.status}`);
+    const data = await res.json();
+    assert(data.skill_descriptions && typeof data.skill_descriptions === "object", "expected a skill_descriptions object on the branch response");
+    const authority = data.skill_descriptions["Authority"];
+    assert(authority && authority.body, `expected a real description for "Authority", got: ${JSON.stringify(authority)}`);
+  });
+
   return results;
 }
 

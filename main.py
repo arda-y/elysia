@@ -753,24 +753,25 @@ _SKILL_NAMES = (
 )
 
 
-def _resolve_key_actor_ids() -> tuple[int, set[int]]:
+def _resolve_key_actor_ids() -> tuple[int, set[int], dict[int, str]]:
     conn = sqlite3.connect(_OPTIMIZED_DB_PATH)
     try:
         you_row = conn.execute("SELECT id FROM actors WHERE name = 'You'").fetchone()
         if you_row is None:
             raise RuntimeError("no actor named 'You' found in actors - is_player_choice can't be determined")
         placeholders = ",".join("?" * len(_SKILL_NAMES))
-        skill_rows = conn.execute(f"SELECT id FROM actors WHERE name IN ({placeholders})", _SKILL_NAMES).fetchall()
+        skill_rows = conn.execute(f"SELECT id, name FROM actors WHERE name IN ({placeholders})", _SKILL_NAMES).fetchall()
         if len(skill_rows) != len(_SKILL_NAMES):
-            found = {r[0] for r in conn.execute(f"SELECT name FROM actors WHERE name IN ({placeholders})", _SKILL_NAMES)}
+            found = {r[1] for r in skill_rows}
             missing = set(_SKILL_NAMES) - found
             raise RuntimeError(f"expected {len(_SKILL_NAMES)} skill actors by name, missing: {missing}")
-        return you_row[0], {r[0] for r in skill_rows}
+        names_by_id = {r[0]: r[1] for r in skill_rows}
+        return you_row[0], set(names_by_id), names_by_id
     finally:
         conn.close()
 
 
-YOU_ACTOR_ID, SKILL_ACTOR_IDS = _resolve_key_actor_ids()
+YOU_ACTOR_ID, SKILL_ACTOR_IDS, SKILL_ACTOR_NAMES_BY_ID = _resolve_key_actor_ids()
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -1169,6 +1170,23 @@ async def _get_actor_descriptions() -> dict[int, dict]:
             parsed = ((row.id, _parse_actor_description(row.description)) for row in result.fetchall())
             _actor_descriptions_cache = {actor_id: desc for actor_id, desc in parsed if desc is not None}
     return _actor_descriptions_cache
+
+
+# checkBadgeHtml/passiveCheckBadgeHtml (frontend) show a check's own skill
+# name (e.g. "requires Authority 10 to trigger") separately from any
+# entry's own speaker - a real (player-initiated) check's speaker is
+# always "You", never the skill itself, so speaker_description (keyed by
+# the ENTRY's own actor) never carries the skill's own flavor text for
+# that case. Keyed by name, not id, since that's what the checks table
+# and passive_check both expose - a tiny, fixed 28-entry map, cheap to
+# embed on every branch response the same way variables already is.
+async def _get_skill_descriptions() -> dict[str, dict]:
+    descriptions = await _get_actor_descriptions()
+    return {
+        name: descriptions[actor_id]
+        for actor_id, name in SKILL_ACTOR_NAMES_BY_ID.items()
+        if actor_id in descriptions
+    }
 
 
 @app.get("/actors/{actor_id}")
@@ -1828,6 +1846,7 @@ async def _fetch_branch(conversation_id: int):
             }
 
         variables = await _variable_descriptions_for_entries(session, entries)
+        skill_descriptions = await _get_skill_descriptions()
 
         return {
             "branch_id": dialogue.id,
@@ -1837,6 +1856,7 @@ async def _fetch_branch(conversation_id: int):
             "links": links,
             "true_entry": true_entry,
             "variables": variables,
+            "skill_descriptions": skill_descriptions,
         }
 
 
@@ -2134,6 +2154,7 @@ async def api_get_line(request: Request, conversation_id: int, line_id: int):
         entry["branch_id"] = conversation_id
         entry["branch_title"] = dialogue.title
         entry["variables"] = await _variable_descriptions_for_entries(session, [entry])
+        entry["skill_descriptions"] = await _get_skill_descriptions()
         return entry
 
 

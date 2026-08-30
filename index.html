@@ -1336,6 +1336,16 @@ async function runLineDetail(branch, id) {
     const res = await fetch(`branches/${branch}/lines/${id}`);
     if (!res.ok) { out.textContent = "error: " + (await res.json()).detail; return; }
     const entry = await res.json();
+    // variableRefHtml/skillOrPlain's hover lookups both read the global
+    // branchData rather than taking data as an argument (see their own
+    // comments) - branchExplorer sets it via indexBranchData, but this
+    // page never did, so a variable/skill hint hovered here always came
+    // back empty even though the API response carries entry.variables/
+    // entry.skill_descriptions already, same shape branchData needs.
+    // Safe to overwrite outright: runBranchExplorer always re-sets its
+    // own branchData fresh via indexBranchData before rendering, so a
+    // stale assignment left here can't leak into a later branch view.
+    branchData = entry;
     out.innerHTML = `
       <div class="meta">branch ${entry.branch_id}: ${escapeHtml(entry.branch_title || "")}</div>
       ${renderNodeHtml(entry, entry.branch_id, /*showCopyLink=*/false)}
@@ -1457,6 +1467,18 @@ async function switchToBranch(branchId) {
 // Shared between the full node display and the option-button preview -
 // a choice leading straight into a check needs the same RED/WHITE +
 // skill + difficulty badge *before* you commit to it, not just after.
+// A check's own skill name has no speaker_description of its own to draw
+// on - a real (player-initiated) check's entry.speaker is always "You",
+// never the skill, so the entry-level hover (see renderNodeHtml's own
+// speaker line) never carries the skill's flavor text for this case.
+// branchData.skill_descriptions (see main.py's _get_skill_descriptions)
+// is a small name-keyed map embedded on every branch/line-detail response
+// specifically to cover this - same "already embedded, no extra fetch"
+// reasoning as branchData.variables.
+function skillDescription(name) {
+  return (branchData && branchData.skill_descriptions && branchData.skill_descriptions[name]) || null;
+}
+
 function checkBadgeHtml(check) {
   // difficulty_target is the real in-game DC (6-20) - see main.py's
   // DIFFICULTY_TIERS comment for how that's derived from the raw db index.
@@ -1466,7 +1488,7 @@ function checkBadgeHtml(check) {
     ? `${check.difficulty_target}`
     : `tier ${check.difficulty_tier} (unrecognized)`;
   return `<div class="check ${check.is_red ? "red" : "white"}">`
-       + `${check.is_red ? "RED" : "WHITE"} check &middot; ${skillOrPlain(check.skill)} &middot; ${label}`
+       + `${check.is_red ? "RED" : "WHITE"} check &middot; ${skillOrPlain(check.skill, skillDescription(check.skill))} &middot; ${label}`
        + `</div>`;
 }
 
@@ -1478,7 +1500,7 @@ function passiveCheckBadgeHtml(pc) {
   const label = pc.difficulty_target != null
     ? `${pc.difficulty_target}`
     : `tier ${pc.difficulty_tier} (unrecognized)`;
-  return `<div class="passive-check">passive check &middot; requires ${skillOrPlain(pc.skill)} ${label} to trigger</div>`;
+  return `<div class="passive-check">passive check &middot; requires ${skillOrPlain(pc.skill, skillDescription(pc.skill))} ${label} to trigger</div>`;
 }
 
 // v2.0.0 - plays a line's voice-over, if one exists, from GET
@@ -1874,7 +1896,7 @@ function renderOptions(options) {
     // Who says this line matters for telling options apart at a glance -
     // previously only "you" got any speaker indication (the prefix below),
     // everyone/everything else was unlabeled.
-    const speakerLabel = skillOrPlain(e.speaker || "?");
+    const speakerLabel = skillOrPlain(e.speaker || "?", e.speaker_description);
     const prefix = e.is_player_choice ? "&raquo; " : "";
     const isDuplicate = previewCounts[e.text || ""] > 1;
     // line options always land in the branch currently being walked -
