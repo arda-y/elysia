@@ -730,21 +730,26 @@ def ensure_optimized_db() -> None:
 
 ensure_optimized_db()
 
-# The 24 skill actors + "You" (the player), resolved by NAME instead of a
+# The 28 skill actors + "You" (the player), resolved by NAME instead of a
 # hardcoded id - a numeric actor id is only stable within one specific
 # Chat Mapper export. Confirmed the hard way: comparing
 # against a newer export (Dec 2021 vs this project's original Mar 2021
 # one) showed every single actor id renumbered from scratch, even though
-# the *names* and the relative structure (You immediately followed by
-# the 24 skills, contiguous) stayed identical. Queried once, synchronously,
-# against the freshly-built OptimizedDE.db - same timing as
-# ensure_optimized_db() itself, before the async engine exists.
+# the *names* stayed identical for the base 24. That newer export also
+# split the base "Perception" skill into 4 separate sense-specific actors
+# (Sight/Hearing/Smell/Taste) alongside the original - 672 dentries use
+# one of those 4 specifically, none of which matched this list until they
+# were added here, so every one of those lines silently rendered as an
+# ordinary line instead of a passive check (no error - the missing-name
+# check below only guards against a name in this list NOT resolving, not
+# against a real skill actor existing outside it).
 _SKILL_NAMES = (
     "Conceptualization", "Logic", "Encyclopedia", "Rhetoric", "Drama", "Visual Calculus",
     "Empathy", "Inland Empire", "Volition", "Authority", "Suggestion", "Esprit de Corps",
     "Endurance", "Physical Instrument", "Shivers", "Pain Threshold", "Electrochemistry",
     "Half Light", "Hand/Eye Coordination", "Reaction Speed", "Savoir Faire", "Interfacing",
-    "Composure", "Perception",
+    "Composure", "Perception", "Perception (Sight)", "Perception (Hearing)",
+    "Perception (Smell)", "Perception (Taste)",
 )
 
 

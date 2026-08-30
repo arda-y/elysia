@@ -288,6 +288,23 @@ export async function runChecks(apiBase) {
     assert(JSON.stringify(names) === JSON.stringify(sorted), "expected results sorted alphabetically by name");
   });
 
+  // --- 537/577: Perception sub-skill actors recognized as passive checks
+  // v2.3.3: the Dec 2021 export split the base "Perception" skill into 4
+  // sense-specific actors (Sight/Hearing/Smell/Taste, 672 dentries total)
+  // that weren't in main.py's _SKILL_NAMES - none of them resolved as
+  // passive checks, no error raised (the startup guard only catches a
+  // *listed* name failing to resolve, not a real skill actor existing
+  // outside the list). 537/577 is a real, confirmed Perception (Hearing)
+  // check, Normal/10.
+  await check("537/577 (Perception (Hearing)) is recognized as a passive check", async () => {
+    const idx537 = await fetchIndex(apiBase, 537);
+    const entry = idx537.entriesById[577];
+    assert(entry, "expected dentry 577 to exist in branch 537");
+    assert(entry.passive_check, `expected a passive_check on 577, got: ${JSON.stringify(entry.passive_check)}`);
+    assert(entry.passive_check.skill === "Perception (Hearing)",
+      `expected skill "Perception (Hearing)", got: ${JSON.stringify(entry.passive_check)}`);
+  });
+
   return results;
 }
 
