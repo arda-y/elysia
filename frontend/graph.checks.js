@@ -17,6 +17,25 @@
 import { indexBranch, nextRealSteps, passiveCheckIsExclusive, resolveOptions, resolveChain } from "./graph.js";
 import { resolvePrevReal } from "./back.js";
 
+// v2.3.1: the "effect: <code>...</code>" line inside a search/effects
+// result rendered completely unstyled - #explorer .effect / #line-detail
+// .effect was the only CSS scope for that class, and runSearchEffects
+// renders into #search-results, matching neither. Confirmed pre-existing
+// back to v1.2.0/v2.1.0, not caused by any later change - fixed by adding
+// #search-results to the selector. Checked here as a plain text search
+// over the served index.html (not a DOM assertion - this file has no DOM
+// access in either its browser or node run mode) so a future edit that
+// silently narrows the selector back down gets caught.
+async function checkEffectCssScoping(apiBase) {
+  const base = apiBase.replace(/\/+$/, "");
+  const res = await fetch(`${base}/`);
+  if (!res.ok) throw new Error(`GET / : ${res.status}`);
+  const html = await res.text();
+  const m = html.match(/#explorer \.effect,[^{]*\{/);
+  assert(m, "expected to find the #explorer .effect CSS rule at all");
+  assert(m[0].includes("#search-results"), `#search-results .effect is missing from the rule - the effects search page will render unstyled again. Rule found: ${m[0]}`);
+}
+
 // v0 of the rewrite briefly had a real bug here: resolveOptions from 181
 // jumped straight to [217, 399], silently never surfacing 12 as its own
 // step at all - because a lone passive check with no sibling is trivially
@@ -223,6 +242,30 @@ export async function runChecks(apiBase) {
     const idx556 = await fetchIndex(apiBase, 556);
     const steps = nextRealSteps(idx556, 407);
     assert(Array.isArray(steps), "nextRealSteps must return an array even when the graph cycles back through 407");
+  });
+
+  // --- 9/50: check success/failure outcome tagging --------------------
+  // v2.3.1: graph.js's rewrite of the walk logic (v2.1.0) never ported
+  // the pre-rewrite app's outcome tagging - every option's `.outcome` was
+  // always undefined, so the success/failure marker (border color + the
+  // "✓ success"/"✗ failure" tag) never rendered anywhere, on any check,
+  // even though the rendering code for it was still fully in place. 9/50
+  // is a real white Savoir Faire check ("Grab the tie.") confirmed
+  // against live data: its one success branch is 82, its (several)
+  // failure branches include 38/42/33/19.
+  await check("resolveChain(9/50) tags the check's own branches success/failure", async () => {
+    const idx9 = await fetchIndex(apiBase, 9);
+    const chain = resolveChain(idx9, 50);
+    const byId = Object.fromEntries(chain.options.filter(o => o.type === "line").map(o => [o.dentryId, o.outcome]));
+    assert(byId[82] === "success", `expected 82 tagged success, got: ${JSON.stringify(byId)}`);
+    assert(byId[38] === "failure", `expected 38 tagged failure, got: ${JSON.stringify(byId)}`);
+    assert(Object.values(byId).some(o => o === "success") && Object.values(byId).some(o => o === "failure"),
+      `expected at least one success and one failure branch, got: ${JSON.stringify(byId)}`);
+  });
+
+  // --- CSS: #search-results .effect scoping ----------------------------
+  await check("index.html's .effect CSS rule covers #search-results, not just #explorer/#line-detail", async () => {
+    await checkEffectCssScoping(apiBase);
   });
 
   return results;

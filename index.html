@@ -242,11 +242,11 @@
     border-left: 3px solid var(--border-strong); padding-left: 0.5rem;
   }
   #explorer .condition code, #line-detail .condition code { color: var(--code-fg); }
-  #explorer .effect, #line-detail .effect {
+  #explorer .effect, #line-detail .effect, #search-results .effect {
     font-size: 0.75rem; color: var(--fg-muted); margin-top: 0.2rem;
     border-left: 3px solid var(--effect-border); padding-left: 0.5rem;
   }
-  #explorer .effect code, #line-detail .effect code { color: var(--code-fg); }
+  #explorer .effect code, #line-detail .effect code, #search-results .effect code { color: var(--code-fg); }
   /* A raw userscript/condition call (e.g.
      SetVariableValue("boardwalk.pigs_espirt_morrands_from_trafic", true))
      is often one long unbroken identifier - <code> doesn't wrap by
@@ -393,7 +393,7 @@ import { resolvePrevReal } from "./frontend/back.js";
 // within module scope, so referencing them here before their own
 // declaration further down the file is safe.
 //
-// Real bug arda caught live (v2.1.0): "copy line/branch/ORB address"
+// Real bug caught live (v2.1.0): "copy line/branch/ORB address"
 // buttons were broken - the first pass at this list only scanned for the
 // OUTERMOST call in each onclick (e.g. copyToClipboard), missing that
 // lineAddressUrl/branchAddressUrl/orbAddressUrl are called *inside*

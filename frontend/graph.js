@@ -58,6 +58,7 @@ export function indexBranch(branchId, json) {
  * @property {number} [toBranch]     // type === "cross"
  * @property {number} [toDentry]     // type === "cross"
  * @property {string[]} conditions   // generic conditionstring gates seen on system nodes en route
+ * @property {"success"|"failure"|null} [outcome]  // see activeFlag param on nextRealSteps below
  */
 
 /**
@@ -73,15 +74,36 @@ export function indexBranch(branchId, json) {
  * simply stops contributing further steps down that path rather than
  * hanging.
  *
+ * activeFlag is the flagname of the most recent real (player-initiated)
+ * check the walk has passed through, if any - sticks unchanged across any
+ * number of subsequent non-check real lines and system-node hops until
+ * the next real check overwrites it (resolveChain is what actually
+ * maintains that "sticks" behavior across hops; a single nextRealSteps
+ * call just threads whatever it's given straight through its own
+ * recursion, refreshing it from dentryId's own `.check.flag` if present).
+ * A check's pass/fail branches are encoded in this dataset as two
+ * system/group nodes further down the graph, gated by conditionstring
+ * `Variable["<flag>"]` (success) or `(Variable["<flag>"]) == false`
+ * (failure) - confirmed against the real data (checks.flagname
+ * cross-referenced with dentries.conditionstring), same mechanism the
+ * pre-rewrite app used (see git history predating frontend/graph.js) -
+ * lost in the graph.js rewrite and restored here. Every step returned
+ * downstream of such a gate inherits that outcome, same as `conditions`.
+ *
  * @param {BranchIndex} idx
  * @param {number} dentryId
  * @param {Set<number>} [visited]
  * @param {string[]} [conditions]
+ * @param {Object} [activeVars]
+ * @param {string|null} [activeFlag]
+ * @param {"success"|"failure"|null} [outcome]
  * @returns {Step[]}
  */
-export function nextRealSteps(idx, dentryId, visited, conditions, activeVars) {
+export function nextRealSteps(idx, dentryId, visited, conditions, activeVars, activeFlag, outcome) {
   visited = visited || new Set();
   conditions = conditions || [];
+  activeFlag = activeFlag || null;
+  outcome = outcome || null;
   // A check's own `effect` (userscript) can set a variable that a
   // downstream system node's own condition later tests - e.g. branch
   // 569: 289/6's SetVariableValue("...remember_contact_mic", true)
@@ -95,37 +117,53 @@ export function nextRealSteps(idx, dentryId, visited, conditions, activeVars) {
   const selfEntry = idx.entriesById[dentryId];
   const selfSetVar = selfEntry && extractSetVariable(selfEntry.effect);
   const localVars = selfSetVar ? { ...activeVars, [selfSetVar.name]: selfSetVar.value } : (activeVars || {});
+  // A real check found at dentryId itself takes over as the active flag
+  // for everything downstream from here, same "sticks until the next
+  // real check overwrites it" rule the old app used - refreshed fresh on
+  // every call so it's correct regardless of how many hops away the
+  // check that set it was found.
+  const effectiveFlag = (selfEntry && selfEntry.check && selfEntry.check.flag) || activeFlag;
 
   const steps = [];
   const links = idx.linksByOrigin[dentryId] || [];
   for (const l of links) {
     if (l.leaves_branch) {
-      steps.push({ type: "cross", toBranch: l.to_branch_id, toDentry: l.to_dentry_id, conditions });
+      steps.push({ type: "cross", toBranch: l.to_branch_id, toDentry: l.to_dentry_id, conditions, outcome });
       continue;
     }
     if (visited.has(l.to_dentry_id)) continue; // cycle guard
     const dest = idx.entriesById[l.to_dentry_id];
     if (!dest) continue;
     if (dest.is_system) {
-      const outcome = dest.condition ? conditionOutcome(dest.condition, localVars) : "unknown";
-      if (outcome === "contradicted") continue; // impossible given what we now know - not an ordinary fork, just skip
-      // Still labeled even once "confirmed" (a known active var settles
-      // it) - a little redundant once you've already seen the check that
-      // guarantees it, but keeping the label is what lets
-      // passiveCheckIsExclusive later tell "reached unconditionally" apart
-      // from "reached via a gate that just happens to be confirmed right
-      // now" - stripping it here silently erased that distinction and
-      // broke the exclusivity check for anything conditionally downstream
-      // of a confirmed gate (real bug: branch 569's 290 got compared
-      // against 23/26 as if they were unconditional siblings, once 290's
-      // OWN confirming check had already stripped their label).
-      const nextConditions = dest.condition ? [...conditions, dest.condition] : conditions;
+      let nextOutcome = outcome;
+      let nextConditions = conditions;
+      let skip = false;
+      if (dest.condition && effectiveFlag && dest.condition === `Variable["${effectiveFlag}"]`) {
+        nextOutcome = "success";
+      } else if (dest.condition && effectiveFlag && dest.condition === `(Variable["${effectiveFlag}"]) == false`) {
+        nextOutcome = "failure";
+      } else {
+        const varOutcome = dest.condition ? conditionOutcome(dest.condition, localVars) : "unknown";
+        if (varOutcome === "contradicted") skip = true; // impossible given what we now know - not an ordinary fork, just skip
+        // Still labeled even once "confirmed" (a known active var settles
+        // it) - a little redundant once you've already seen the check that
+        // guarantees it, but keeping the label is what lets
+        // passiveCheckIsExclusive later tell "reached unconditionally" apart
+        // from "reached via a gate that just happens to be confirmed right
+        // now" - stripping it here silently erased that distinction and
+        // broke the exclusivity check for anything conditionally downstream
+        // of a confirmed gate (real bug: branch 569's 290 got compared
+        // against 23/26 as if they were unconditional siblings, once 290's
+        // OWN confirming check had already stripped their label).
+        nextConditions = dest.condition ? [...conditions, dest.condition] : conditions;
+      }
+      if (skip) continue;
       const nextVisited = new Set(visited);
       nextVisited.add(l.to_dentry_id);
-      steps.push(...nextRealSteps(idx, l.to_dentry_id, nextVisited, nextConditions, localVars));
+      steps.push(...nextRealSteps(idx, l.to_dentry_id, nextVisited, nextConditions, localVars, effectiveFlag, nextOutcome));
     } else {
       const nextConditions = dest.condition ? [...conditions, dest.condition] : conditions;
-      steps.push({ type: "line", dentryId: l.to_dentry_id, conditions: nextConditions });
+      steps.push({ type: "line", dentryId: l.to_dentry_id, conditions: nextConditions, outcome });
     }
   }
 
@@ -144,7 +182,7 @@ export function nextRealSteps(idx, dentryId, visited, conditions, activeVars) {
   if (selfSetVar) {
     const nextVisited = new Set(visited);
     nextVisited.add(dentryId);
-    steps.push(...walkToContradiction(idx, dentryId, nextVisited, selfSetVar));
+    steps.push(...walkToContradiction(idx, dentryId, nextVisited, selfSetVar, effectiveFlag));
   }
 
   return steps;
@@ -352,13 +390,14 @@ export function passiveCheckIsExclusive(idx, checkStep, siblings) {
  * @param {BranchIndex} idx
  * @param {number} dentryId
  * @param {Set<number>} [visited]
+ * @param {string|null} [activeFlag]  // see nextRealSteps' own doc
  * @returns {Step[]} the final, merged option steps (each `via`-annotated)
  */
-export function resolveOptions(idx, dentryId, visited) {
+export function resolveOptions(idx, dentryId, visited, activeFlag) {
   visited = visited || new Set([dentryId]);
-  const steps = nextRealSteps(idx, dentryId, visited);
+  const steps = nextRealSteps(idx, dentryId, visited, undefined, undefined, activeFlag);
   if (steps.length === 1) return steps.map(s => ({ ...s, via: s.via || [] }));
-  return mergeOptions(resolveFork(idx, steps, visited));
+  return mergeOptions(resolveFork(idx, steps, visited, activeFlag));
 }
 
 /**
@@ -368,7 +407,7 @@ export function resolveOptions(idx, dentryId, visited) {
  * resolveOptions, which is the only thing that knows whether a given
  * `steps` array is actually a fork worth resolving this way.
  */
-function resolveFork(idx, steps, visited) {
+function resolveFork(idx, steps, visited, activeFlag) {
   const result = [];
   for (const step of steps) {
     if (step.type === "line") {
@@ -376,7 +415,7 @@ function resolveFork(idx, steps, visited) {
       if (entry && entry.passive_check) {
         const siblings = steps.filter(s => s !== step);
         if (!passiveCheckIsExclusive(idx, step, siblings)) {
-          result.push(...flattenThrough(idx, step, visited));
+          result.push(...flattenThrough(idx, step, visited, activeFlag));
           continue;
         }
         // Kept as its own exclusive option. Its own outcome-contradiction
@@ -410,7 +449,7 @@ function resolveFork(idx, steps, visited) {
  * contradiction found before hitting real content) contributes nothing -
  * there's no failure-specific content to promote on that path.
  */
-function walkToContradiction(idx, dentryId, visited, setVar) {
+function walkToContradiction(idx, dentryId, visited, setVar, activeFlag) {
   const results = [];
   const links = idx.linksByOrigin[dentryId] || [];
   for (const l of links) {
@@ -425,10 +464,10 @@ function walkToContradiction(idx, dentryId, visited, setVar) {
       // found the divergence - resolve normally from here, now knowing
       // the opposite value (in case of a further nested check on the
       // same variable, however unlikely).
-      results.push(...nextRealSteps(idx, l.to_dentry_id, nextVisited, [], { [setVar.name]: !setVar.value }));
+      results.push(...nextRealSteps(idx, l.to_dentry_id, nextVisited, [], { [setVar.name]: !setVar.value }, activeFlag));
     } else if (outcome !== "confirmed") {
       // an unrelated gate - keep descending, the divergence may be further in
-      results.push(...walkToContradiction(idx, l.to_dentry_id, nextVisited, setVar));
+      results.push(...walkToContradiction(idx, l.to_dentry_id, nextVisited, setVar, activeFlag));
     }
     // "confirmed" is this check's own ordinary continuation, already
     // covered by its normal via/options - not part of the failure branch.
@@ -446,11 +485,11 @@ function walkToContradiction(idx, dentryId, visited, setVar) {
  * caller's side will naturally continue discovering it). Every returned
  * option is prefixed with this check's own dentryId in `via`.
  */
-function flattenThrough(idx, checkStep, visited) {
+function flattenThrough(idx, checkStep, visited, activeFlag) {
   const nextVisited = new Set(visited);
   nextVisited.add(checkStep.dentryId);
-  const beyond = nextRealSteps(idx, checkStep.dentryId, nextVisited);
-  const resolved = beyond.length === 1 ? beyond : resolveFork(idx, beyond, nextVisited);
+  const beyond = nextRealSteps(idx, checkStep.dentryId, nextVisited, undefined, undefined, activeFlag);
+  const resolved = beyond.length === 1 ? beyond : resolveFork(idx, beyond, nextVisited, activeFlag);
   // checkStep's own `conditions` (accumulated by nextRealSteps on the way
   // TO the check itself, e.g. a gate on an intermediate system node) has
   // to travel with it into `via`, not get dropped - it's the same
@@ -489,10 +528,16 @@ export function mergeOptions(steps) {
     if (group.length === 1) { merged.push(group[0]); continue; }
     const anyUnconditional = group.some(s => !s.conditions || s.conditions.length === 0);
     const anyDirectVia = group.some(s => !s.via || s.via.length === 0);
+    // Same "if even one path shows it, it's real" logic as conditions/via
+    // above - if any path in the group reached this destination with a
+    // known outcome, that's worth surfacing even if another path (e.g. a
+    // reconverging bypass with no active check) didn't happen to see one.
+    const withOutcome = group.find(s => s.outcome);
     merged.push({
       ...group[0],
       conditions: anyUnconditional ? [] : group[0].conditions,
       via: anyDirectVia ? [] : group[0].via,
+      outcome: withOutcome ? withOutcome.outcome : null,
     });
   }
   return merged;
@@ -553,6 +598,11 @@ export function resolveChain(idx, dentryId) {
   // same as the old code starting fresh at the top of renderChainFrom.
   let pendingConditions = [];
   const visited = new Set();
+  // The flagname of the most recent real check collected - sticks
+  // unchanged across any number of subsequent non-check lines, same as
+  // the pre-rewrite app's activeCheckFlag, so a check's own success/
+  // failure branches stay taggable even several auto-advanced hops later.
+  let activeFlag = null;
   while (true) {
     if (visited.has(current)) return { collected, options: [], branchId: idx.branchId }; // cycle guard
     visited.add(current);
@@ -561,9 +611,10 @@ export function resolveChain(idx, dentryId) {
     if (entry && !entry.is_system) {
       collected.push({ dentryId: current, conditions: pendingConditions });
       pendingConditions = [];
+      if (entry.check) activeFlag = entry.check.flag;
     }
 
-    const options = resolveOptions(idx, current, new Set([current]));
+    const options = resolveOptions(idx, current, new Set([current]), activeFlag);
     if (options.length !== 1) return { collected, options, branchId: idx.branchId };
 
     const only = options[0];
