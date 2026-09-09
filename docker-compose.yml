@@ -7,14 +7,18 @@ services:
     ports:
       - "127.0.0.1:2005:2005"
     volumes:
-      # Read-only, and still bind-mounted rather than baked into the image
-      # via the Dockerfile's own COPY, even though it now lives in this
-      # project's own db/ - a rebuild still shouldn't have to re-copy 3GB
-      # into a fresh image layer every time. The extraction/matching
-      # pipeline that originally produced this file (de-voice-extract) is
-      # retired (2026-08-27) - if this file ever needs regenerating, that
-      # whole pipeline (game download, asset extraction, actor/dentry
-      # matching) would need rebuilding from scratch first.
+      # Read-only. Rebuilt 2026-09-10 via the TFC-resolve + JV-text-bridge
+      # method in misc/match_voice_files_v3.py (see elysia-project-notes
+      # memory for the full writeup) - 46,121/47,155 files correctly
+      # matched to their current-JV (branch_id, dentry_id). 104 files
+      # left deliberately unmatched (old/JV occurrence-count mismatch for
+      # a repeated line - not resolvable from data alone) pending manual
+      # review. Do NOT bind-mount this path while the file is absent -
+      # Docker silently vivifies a directory at the mount target instead
+      # of erroring, which crashes _load_voiced_actor_names() far more
+      # confusingly than a simple missing file would (see 2026-09-10
+      # incident in memory). Comment this line out first if the file
+      # ever needs to come down again.
       - /home/arda/projects/elysia/db/voice_archive.db:/app/db/voice_archive.db:ro
       # GET /audio's own per-IP request/ban log - a real host directory
       # (not baked into the image) so it survives every rebuild/restart,
