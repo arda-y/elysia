@@ -89,6 +89,9 @@ def real_folder_actor(rel_path: str) -> str | None:
     return None
 
 
+FIXED_PREFIX_RE = re.compile(r"^fixed-", re.IGNORECASE)
+
+
 def parse_filename(filename: str, folder_actor: str | None):
     """Returns (branch_text, n, alt_index) or None. Tries the
     folder-anchored strip first (handles hyphenated actor names
@@ -96,6 +99,13 @@ def parse_filename(filename: str, folder_actor: str | None):
     cleanly apply."""
     alt_index = None
     rest = filename
+    m_fixed = FIXED_PREFIX_RE.match(rest)
+    if m_fixed:
+        # a handful of re-recorded takes (16, checked 2026-09-10) carry
+        # a literal "fixed-" marker before the actor name - strip it
+        # before the folder-anchor match, same idea as the alt-index
+        # prefix below.
+        rest = rest[m_fixed.end():]
     m_alt = ALT_PREFIX_RE.match(rest)
     if m_alt:
         alt_index = int(m_alt.group("alt"))
