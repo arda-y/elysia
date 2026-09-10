@@ -119,6 +119,28 @@ directly - handle them in the apply step):
   pipeline recomputes it. Re-parse it from `filename` via `ALT_RE` for
   every row, matched or not.
 
+## v4 addendum: actor cross-check at every tier
+
+v3's tier 1 ("unique text match in the branch") never cross-checked
+actor agreement - only tiers 2/3 (triggered only when a text was
+already ambiguous) did. Found by hand-reviewing 2 of the original 104
+stuck cases (both in `CONTAINERYARD EVRART`): each one's correct dentry,
+confirmed by an exact verbatim text match, was already claimed by a
+**completely unrelated actor's** file via tier 1 (`Pain Threshold`
+squatting on a `Rhetoric` line, `Empathy` squatting on `Encyclopedia`).
+Checked at scale: 1,234/46,121 (2.68%) of v3's matches had this problem,
+concentrated in branches dense with interchangeable skill-check
+reaction lines.
+
+`misc/match_voice_files_v4.py` is v3 plus one change: every tier now
+requires the file's real recorded actor (from its own `rel_path` folder
+segment, not the old db's actor field) to match the candidate JV
+dentry's actor before accepting, not just when disambiguating an
+already-ambiguous text. Result: 44,887/47,155 (95.2%) matched - lower
+than v3's raw count on purpose, since ~1,234 wrong matches are now
+correctly rejected rather than silently wrong. Use v4, not v3, for any
+future re-run.
+
 ## Why this document exists
 
 A previous fix for this exact problem existed once before (unknown
